@@ -49,6 +49,17 @@ struct stratwm_view {
     struct stratwm_server *server;
     struct wlr_xdg_toplevel *xdg_toplevel;
     struct wlr_scene_tree *scene_tree;
+    struct wlr_scene_rect *border;  /* Focused/unfocused visual indicator (Phase 8.3) */
+    int workspace_id;  /* Which workspace owns this view */
+    bool is_floating;  /* Escape tiling; render at fixed position (Phase 8.5) */
+    int float_x, float_y;  /* Floating window position */
+    
+    /* Titlebar (Phase 8.8) */
+    struct wlr_scene_rect *titlebar_bg;     /* Titlebar background */
+    struct wlr_scene_rect *close_button;    /* Close button (X) */
+    struct wlr_scene_rect *max_button;      /* Maximize button */
+    struct wlr_scene_rect *min_button;      /* Minimize button */
+    
     struct wl_listener map;
     struct wl_listener unmap;
     struct wl_listener destroy;
@@ -64,6 +75,7 @@ struct stratwm_keyboard {
 };
 
 static const float STRAT_BG[4] = {0.102f, 0.102f, 0.180f, 1.0f};
+static void update_view_border(struct stratwm_view *view, bool focused);
 
 static void spawn_terminal(void) {
     pid_t pid = fork();
@@ -81,6 +93,26 @@ static void spawn_terminal(void) {
         fprintf(stderr, "stratwm: no terminal found\n");
         _exit(127);
     }
+}
+
+static void spawn_autostart(const char *path) {
+    if (access(path, X_OK) != 0) {
+        fprintf(stderr, "stratwm: autostart missing or not executable: %s\n", path);
+        return;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "stratwm: autostart fork failed for %s: %s\n", path, strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+        char *const argv[] = {(char *)path, NULL};
+        execv(path, argv);
+        fprintf(stderr, "stratwm: autostart exec failed for %s: %s\n", path, strerror(errno));
+        _exit(127);
+    }
+    fprintf(stderr, "stratwm: autostart spawned %s (pid=%ld)\n", path, (long)pid);
 }
 
 static struct stratwm_view *view_from_surface(struct stratwm_server *server,
@@ -101,11 +133,508 @@ static void focus_view(struct stratwm_view *view, struct wlr_surface *surface) {
     struct stratwm_server *server = view->server;
     struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(server->seat);
 
+    /* Unfocus previous view and dim border */
+    if (server->focused_view != NULL && server->focused_view != view) {
+        update_view_border(server->focused_view, false);
+    }
+
+    /* Focus new view and highlight border */
+    update_view_border(view, true);
+    server->focused_view = view;
+
     wlr_scene_node_raise_to_top(&view->scene_tree->node);
     wlr_seat_keyboard_notify_enter(server->seat, surface,
         keyboard ? keyboard->keycodes : NULL,
         keyboard ? keyboard->num_keycodes : 0,
         keyboard ? &keyboard->modifiers : NULL);
+}
+
+/* Tiling engine (Phase 8.2) */
+
+static int tile_leaf_count(struct stratwm_tile *tile) {
+    if (!tile) return 0;
+    if (tile->view) return 1;
+    return tile_leaf_count(tile->left) + tile_leaf_count(tile->right);
+}
+
+static bool tile_is_empty_leaf(struct stratwm_tile *tile) {
+    return tile && !tile->view && !tile->left && !tile->right;
+}
+
+static struct stratwm_tile *tile_new(struct wlr_box geometry) {
+    struct stratwm_tile *tile = calloc(1, sizeof(*tile));
+    if (!tile) return NULL;
+    tile->geometry = geometry;
+    tile->split = SPLIT_VERTICAL;
+    tile->parent = NULL;
+    tile->left = NULL;
+    tile->right = NULL;
+    tile->view = NULL;
+    return tile;
+}
+
+static void tile_free(struct stratwm_tile *tile) {
+    if (!tile) return;
+    if (tile->left) tile_free(tile->left);
+    if (tile->right) tile_free(tile->right);
+    free(tile);
+}
+
+/*
+ * Recompute subtree geometry from a new bounding box while preserving each
+ * internal split ratio from the previous geometry.
+ */
+static void tile_apply_geometry(struct stratwm_tile *tile, struct wlr_box geometry) {
+    if (!tile) return;
+
+    struct wlr_box old = tile->geometry;
+    tile->geometry = geometry;
+
+    if (!tile->left || !tile->right) {
+        return;
+    }
+
+    if (tile->split == SPLIT_VERTICAL) {
+        int left_width = geometry.width / 2;
+        if (old.width > 0) {
+            left_width = (tile->left->geometry.width * geometry.width) / old.width;
+        }
+        if (left_width < 1) left_width = 1;
+        if (left_width > geometry.width - 1) left_width = geometry.width - 1;
+
+        struct wlr_box left_box = geometry;
+        left_box.width = left_width;
+
+        struct wlr_box right_box = geometry;
+        right_box.x = geometry.x + left_width;
+        right_box.width = geometry.width - left_width;
+
+        tile_apply_geometry(tile->left, left_box);
+        tile_apply_geometry(tile->right, right_box);
+        return;
+    }
+
+    int top_height = geometry.height / 2;
+    if (old.height > 0) {
+        top_height = (tile->left->geometry.height * geometry.height) / old.height;
+    }
+    if (top_height < 1) top_height = 1;
+    if (top_height > geometry.height - 1) top_height = geometry.height - 1;
+
+    struct wlr_box top_box = geometry;
+    top_box.height = top_height;
+
+    struct wlr_box bottom_box = geometry;
+    bottom_box.y = geometry.y + top_height;
+    bottom_box.height = geometry.height - top_height;
+
+    tile_apply_geometry(tile->left, top_box);
+    tile_apply_geometry(tile->right, bottom_box);
+}
+
+/* Insert or replace a leaf view in the BSP tree, splitting if needed */
+static struct stratwm_tile *tile_insert(struct stratwm_tile *tile,
+    struct stratwm_view *view, struct wlr_box max_geometry) {
+    if (!tile) {
+        tile = tile_new(max_geometry);
+        if (!tile) return NULL;
+    }
+
+    /* Empty leaf: claim it */
+    if (!tile->view && !tile->left && !tile->right) {
+        tile->view = view;
+        return tile;
+    }
+
+    /* Leaf node: insert new view by splitting */
+    if (tile->view != NULL) {
+        struct stratwm_view *existing = tile->view;
+        tile->view = NULL; /* becomes internal node */
+
+        /* Allocate left and right children with split geometry */
+        if (tile->split == SPLIT_VERTICAL) {
+            int mid = tile->geometry.x + tile->geometry.width / 2;
+            struct wlr_box left_box = tile->geometry;
+            left_box.width = mid - tile->geometry.x;
+
+            struct wlr_box right_box = tile->geometry;
+            right_box.x = mid;
+            right_box.width = tile->geometry.x + tile->geometry.width - mid;
+
+            tile->left = tile_new(left_box);
+            tile->right = tile_new(right_box);
+        } else {
+            int mid = tile->geometry.y + tile->geometry.height / 2;
+            struct wlr_box top_box = tile->geometry;
+            top_box.height = mid - tile->geometry.y;
+
+            struct wlr_box bottom_box = tile->geometry;
+            bottom_box.y = mid;
+            bottom_box.height = tile->geometry.y + tile->geometry.height - mid;
+
+            tile->left = tile_new(top_box);
+            tile->right = tile_new(bottom_box);
+        }
+
+        if (!tile->left || !tile->right) {
+            tile_free(tile->left);
+            tile_free(tile->right);
+            tile->left = NULL;
+            tile->right = NULL;
+            tile->view = existing;
+            return tile;
+        }
+
+        tile->left->parent = tile;
+        tile->right->parent = tile;
+
+        /* Insert existing view into left child */
+        tile->left->view = existing;
+        /* Recursively insert new view into right child */
+        tile->right = tile_insert(tile->right, view, tile->right->geometry);
+
+        return tile;
+    }
+
+    /* Internal node: recurse into left and right */
+    if (tile->left && tile->right) {
+        /* Alternate split direction for next level */
+        enum stratwm_split_direction next_split =
+            (tile->split == SPLIT_VERTICAL) ? SPLIT_HORIZONTAL : SPLIT_VERTICAL;
+
+        /* Insert into the less populated subtree to keep BSP reasonably balanced. */
+        int left_leaves = tile_leaf_count(tile->left);
+        int right_leaves = tile_leaf_count(tile->right);
+        if (left_leaves <= right_leaves) {
+            if (tile->left->split != tile->split) {
+                tile->left->split = next_split;
+            }
+            tile->left = tile_insert(tile->left, view, tile->left->geometry);
+        } else {
+            if (tile->right->split != tile->split) {
+                tile->right->split = next_split;
+            }
+            tile->right = tile_insert(tile->right, view, tile->right->geometry);
+        }
+    }
+
+    return tile;
+}
+
+/* Remove a view from the BSP tree, collapsing if needed */
+static struct stratwm_tile *tile_remove(struct stratwm_tile *tile,
+    struct stratwm_view *view) {
+    if (!tile) return NULL;
+
+    if (tile->view == view) {
+        /* Leaf node with this view: remove it */
+        tile->view = NULL;
+        return tile;
+    }
+
+    /* Recurse into children */
+    if (tile->left) {
+        tile->left = tile_remove(tile->left, view);
+    }
+    if (tile->right) {
+        tile->right = tile_remove(tile->right, view);
+    }
+
+    if (tile->left && tile->right &&
+        tile_is_empty_leaf(tile->left) &&
+        tile_is_empty_leaf(tile->right)) {
+        tile_free(tile->left);
+        tile_free(tile->right);
+        tile->left = NULL;
+        tile->right = NULL;
+        return tile;
+    }
+
+    /*
+     * Promote the non-empty child when its sibling becomes empty. This keeps
+     * the tree compact and lets remaining views reclaim full geometry.
+     */
+    if (tile->left && tile->right &&
+        tile_is_empty_leaf(tile->left) &&
+        !tile_is_empty_leaf(tile->right)) {
+        struct stratwm_tile *promote = tile->right;
+        struct stratwm_tile *empty = tile->left;
+        struct wlr_box full = tile->geometry;
+
+        tile->view = promote->view;
+        tile->split = promote->split;
+        tile->left = promote->left;
+        tile->right = promote->right;
+        if (tile->left) tile->left->parent = tile;
+        if (tile->right) tile->right->parent = tile;
+
+        tile_apply_geometry(tile, full);
+        free(empty);
+        free(promote);
+        return tile;
+    }
+
+    if (tile->left && tile->right &&
+        !tile_is_empty_leaf(tile->left) &&
+        tile_is_empty_leaf(tile->right)) {
+        struct stratwm_tile *promote = tile->left;
+        struct stratwm_tile *empty = tile->right;
+        struct wlr_box full = tile->geometry;
+
+        tile->view = promote->view;
+        tile->split = promote->split;
+        tile->left = promote->left;
+        tile->right = promote->right;
+        if (tile->left) tile->left->parent = tile;
+        if (tile->right) tile->right->parent = tile;
+
+        tile_apply_geometry(tile, full);
+        free(empty);
+        free(promote);
+        return tile;
+    }
+
+    return tile;
+}
+
+/* Find a view within the BSP tree */
+static struct stratwm_tile *tile_find_view(struct stratwm_tile *tile,
+    struct stratwm_view *view) {
+    if (!tile) return NULL;
+    if (tile->view == view) return tile;
+
+    struct stratwm_tile *found = NULL;
+    if (tile->left) {
+        found = tile_find_view(tile->left, view);
+        if (found) return found;
+    }
+    if (tile->right) {
+        found = tile_find_view(tile->right, view);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+/* Update scene node positions based on tile geometry */
+static void tile_reflow_scene(struct stratwm_tile *tile) {
+    if (!tile) return;
+
+    if (tile->view) {
+        /* Position scene tree at tile geometry */
+        wlr_scene_node_set_position(&tile->view->scene_tree->node,
+            tile->geometry.x, tile->geometry.y);
+
+        /* Set surface size to tile dimensions */
+        wlr_xdg_toplevel_set_size(tile->view->xdg_toplevel,
+            tile->geometry.width, tile->geometry.height);
+
+        /* Keep border aligned with tile size (2px outside on each edge). */
+        if (tile->view->border) {
+            int bw = tile->geometry.width + 4;
+            int bh = tile->geometry.height + 4;
+            if (bw < 1) bw = 1;
+            if (bh < 1) bh = 1;
+            wlr_scene_rect_set_size(tile->view->border, bw, bh);
+            wlr_scene_node_set_position(&tile->view->border->node, -2, -2);
+        }
+
+        /* Update titlebar size and button positions (Phase 8.8) */
+        if (tile->view->titlebar_bg) {
+            wlr_scene_rect_set_size(tile->view->titlebar_bg, tile->geometry.width, 24);
+            wlr_scene_node_set_position(&tile->view->titlebar_bg->node, 0, -24);
+        }
+        if (tile->view->close_button) {
+            wlr_scene_node_set_position(&tile->view->close_button->node, 
+                tile->geometry.width - 20, -22);
+        }
+        if (tile->view->max_button) {
+            wlr_scene_node_set_position(&tile->view->max_button->node, 
+                tile->geometry.width - 45, -22);
+        }
+        if (tile->view->min_button) {
+            wlr_scene_node_set_position(&tile->view->min_button->node, 
+                tile->geometry.width - 70, -22);
+        }
+    }
+
+    if (tile->left) tile_reflow_scene(tile->left);
+    if (tile->right) tile_reflow_scene(tile->right);
+}
+
+/* Find next visible leaf tile (for focus traversal) */
+static struct stratwm_tile *tile_next_leaf(struct stratwm_tile *current) {
+    if (!current || !current->parent) return current;
+
+    struct stratwm_tile *parent = current->parent;
+
+    /* If we're at left child, go to right sibling */
+    if (parent->right && current == parent->left) {
+        struct stratwm_tile *next = parent->right;
+        while (next->left || next->right) {
+            next = next->left ? next->left : next->right;
+        }
+        return next;
+    }
+
+    /* Otherwise, traverse up to next ancestor's right subtree */
+    return tile_next_leaf(parent);
+}
+
+static struct stratwm_tile *tile_prev_leaf(struct stratwm_tile *current) {
+    if (!current || !current->parent) return current;
+
+    struct stratwm_tile *parent = current->parent;
+
+    /* If we're at right child, go to left sibling */
+    if (parent->left && current == parent->right) {
+        struct stratwm_tile *prev = parent->left;
+        while (prev->left || prev->right) {
+            prev = prev->right ? prev->right : prev->left;
+        }
+        return prev;
+    }
+
+    /* Otherwise, traverse up */
+    return tile_prev_leaf(parent);
+}
+
+/* Tile resizing: adjust split point with Super+Shift+{H,J,K,L} (Phase 8.7) */
+static void resize_tile_horizontal(struct stratwm_server *server, int delta) {
+    if (!server->focused_view) return;
+    
+    struct stratwm_workspace *ws = &server->workspaces[server->current_workspace];
+    struct stratwm_tile *tile = tile_find_view(ws->root, server->focused_view);
+    if (!tile || !tile->parent || tile->parent->split != SPLIT_VERTICAL) return;
+    
+    /* Adjust parent's center point (will reflow on next key press) */
+    struct stratwm_tile *parent = tile->parent;
+    int current_mid = parent->geometry.x + parent->geometry.width / 2;
+    int new_mid = current_mid + delta;
+    
+    /* Clamp to reasonable bounds (20% to 80% of parent) */
+    int min_mid = parent->geometry.x + parent->geometry.width / 5;
+    int max_mid = parent->geometry.x + 4 * parent->geometry.width / 5;
+    new_mid = (new_mid < min_mid) ? min_mid : (new_mid > max_mid) ? max_mid : new_mid;
+    
+    /* Update child subtree geometry from the resized split. */
+    if (parent->left && parent->right) {
+        struct wlr_box left_box = parent->geometry;
+        left_box.width = new_mid - parent->geometry.x;
+        struct wlr_box right_box = parent->geometry;
+        right_box.x = new_mid;
+        right_box.width = parent->geometry.x + parent->geometry.width - new_mid;
+        tile_apply_geometry(parent->left, left_box);
+        tile_apply_geometry(parent->right, right_box);
+    }
+    
+    tile_reflow_scene(ws->root);
+}
+
+static void resize_tile_vertical(struct stratwm_server *server, int delta) {
+    if (!server->focused_view) return;
+    
+    struct stratwm_workspace *ws = &server->workspaces[server->current_workspace];
+    struct stratwm_tile *tile = tile_find_view(ws->root, server->focused_view);
+    if (!tile || !tile->parent || tile->parent->split != SPLIT_HORIZONTAL) return;
+    
+    /* Adjust parent's center point */
+    struct stratwm_tile *parent = tile->parent;
+    int current_mid = parent->geometry.y + parent->geometry.height / 2;
+    int new_mid = current_mid + delta;
+    
+    /* Clamp to reasonable bounds */
+    int min_mid = parent->geometry.y + parent->geometry.height / 5;
+    int max_mid = parent->geometry.y + 4 * parent->geometry.height / 5;
+    new_mid = (new_mid < min_mid) ? min_mid : (new_mid > max_mid) ? max_mid : new_mid;
+    
+    /* Update child subtree geometry from the resized split. */
+    if (parent->left && parent->right) {
+        struct wlr_box top_box = parent->geometry;
+        top_box.height = new_mid - parent->geometry.y;
+        struct wlr_box bottom_box = parent->geometry;
+        bottom_box.y = new_mid;
+        bottom_box.height = parent->geometry.y + parent->geometry.height - new_mid;
+        tile_apply_geometry(parent->left, top_box);
+        tile_apply_geometry(parent->right, bottom_box);
+    }
+    
+    tile_reflow_scene(ws->root);
+}
+
+/* Window decoration: update border color based on focus (Phase 8.3) */
+static void update_view_border(struct stratwm_view *view, bool focused) {
+    if (!view || !view->border) return;
+
+    /* Focused: bright cyan (#00FFFF); unfocused: dark gray (#444444) */
+    if (focused) {
+        float color[4] = {0.0f, 1.0f, 1.0f, 1.0f};  /* cyan */
+        wlr_scene_rect_set_color(view->border, color);
+    } else {
+        float color[4] = {0.267f, 0.267f, 0.267f, 1.0f};  /* dark gray */
+        wlr_scene_rect_set_color(view->border, color);
+    }
+}
+
+static bool point_in_titlebar_button(struct wlr_scene_rect *button,
+    double view_x, double view_y) {
+    if (!button) return false;
+    int bx = button->node.x;
+    int by = button->node.y;
+    return view_x >= bx && view_x < bx + 20 && view_y >= by && view_y < by + 20;
+}
+
+/* Titlebar creation and management (Phase 8.8) */
+static void create_titlebar(struct stratwm_view *view) {
+    if (!view) return;
+
+    /* Titlebar background: dark blue-gray, spans full window width, 24px height */
+    float bg_color[4] = {0.15f, 0.15f, 0.25f, 1.0f};  /* dark blue-gray */
+    view->titlebar_bg = wlr_scene_rect_create(view->scene_tree, 800, 24, bg_color);
+    if (view->titlebar_bg) {
+        wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -24);  /* Above window */
+    }
+
+    /* Close button: red, 20x20px, positioned at top-right */
+    float close_color[4] = {0.8f, 0.2f, 0.2f, 1.0f};  /* red */
+    view->close_button = wlr_scene_rect_create(view->scene_tree, 20, 20, close_color);
+    if (view->close_button) {
+        wlr_scene_node_set_position(&view->close_button->node, 780, -22);  /* Top-right corner */
+    }
+
+    /* Maximize button: green, 20x20px, left of close */
+    float max_color[4] = {0.2f, 0.8f, 0.2f, 1.0f};  /* green */
+    view->max_button = wlr_scene_rect_create(view->scene_tree, 20, 20, max_color);
+    if (view->max_button) {
+        wlr_scene_node_set_position(&view->max_button->node, 755, -22);  /* Left of close */
+    }
+
+    /* Minimize button: yellow, 20x20px, left of maximize */
+    float min_color[4] = {0.8f, 0.8f, 0.2f, 1.0f};  /* yellow */
+    view->min_button = wlr_scene_rect_create(view->scene_tree, 20, 20, min_color);
+    if (view->min_button) {
+        wlr_scene_node_set_position(&view->min_button->node, 730, -22);  /* Left of maximize */
+    }
+}
+
+static void destroy_titlebar(struct stratwm_view *view) {
+    if (!view) return;
+
+    if (view->titlebar_bg) {
+        wlr_scene_node_destroy(&view->titlebar_bg->node);
+        view->titlebar_bg = NULL;
+    }
+    if (view->close_button) {
+        wlr_scene_node_destroy(&view->close_button->node);
+        view->close_button = NULL;
+    }
+    if (view->max_button) {
+        wlr_scene_node_destroy(&view->max_button->node);
+        view->max_button = NULL;
+    }
+    if (view->min_button) {
+        wlr_scene_node_destroy(&view->min_button->node);
+        view->min_button = NULL;
+    }
 }
 
 static void output_frame_notify(struct wl_listener *listener, void *data) {
@@ -183,19 +712,108 @@ static void server_new_output_notify(struct wl_listener *listener, void *data) {
 static void view_map_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_view *view = wl_container_of(listener, view, map);
+    struct stratwm_server *server = view->server;
+
     wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+
+    /* Create window border decoration (Phase 8.3) */
+    float border_color[4] = {0.267f, 0.267f, 0.267f, 1.0f};  /* default unfocused: dark gray */
+    view->border = wlr_scene_rect_create(view->scene_tree, 1, 1, border_color);
+    if (view->border) {
+        wlr_scene_node_set_position(&view->border->node, -2, -2);
+        wlr_scene_node_lower_to_bottom(&view->border->node);
+    }
+
+    /* Create titlebar with buttons (Phase 8.8) */
+    create_titlebar(view);
+
+    /* Insert into tiling tree (Phase 8.2), unless floating (Phase 8.5) */
+    struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+    
+    if (view->is_floating) {
+        /* Floating window: render at fixed position, not in tree */
+        wlr_scene_node_set_position(&view->scene_tree->node,
+            view->float_x, view->float_y);
+        if (view->border) {
+            wlr_scene_rect_set_size(view->border, 804, 604);
+            wlr_scene_node_set_position(&view->border->node, -2, -2);
+        }
+        /* Size titlebar for floating window */
+        if (view->titlebar_bg) {
+            wlr_scene_rect_set_size(view->titlebar_bg, 800, 24);
+            wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -24);
+        }
+        if (view->close_button) {
+            wlr_scene_node_set_position(&view->close_button->node, 780, -22);
+        }
+        if (view->max_button) {
+            wlr_scene_node_set_position(&view->max_button->node, 755, -22);
+        }
+        if (view->min_button) {
+            wlr_scene_node_set_position(&view->min_button->node, 730, -22);
+        }
+    } else {
+        /* Tiled window: insert into BSP tree */
+        if (!ws->root) {
+            /* Initialize root to first output's geometry, or 1920x1080 default */
+            struct stratwm_output *output;
+            struct wlr_box output_box = {0, 0, 1920, 1080};
+            wl_list_for_each(output, &server->outputs, link) {
+                output_box.width = output->wlr_output->width;
+                output_box.height = output->wlr_output->height;
+                break;
+            }
+            ws->root = tile_new(output_box);
+            if (!ws->root) {
+                focus_view(view, view->xdg_toplevel->base->surface);
+                return;
+            }
+        }
+
+        ws->root = tile_insert(ws->root, view, ws->root->geometry);
+        tile_reflow_scene(ws->root);
+    }
+
+    server->focused_view = view;
     focus_view(view, view->xdg_toplevel->base->surface);
 }
 
 static void view_unmap_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_view *view = wl_container_of(listener, view, unmap);
+    struct stratwm_server *server = view->server;
+
     wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+
+    /* Remove from tiling tree only if not floating (Phase 8.2, 8.5) */
+    if (!view->is_floating) {
+        struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+        if (ws->root) {
+            ws->root = tile_remove(ws->root, view);
+            tile_reflow_scene(ws->root);
+        }
+    }
+
+    if (server->focused_view == view) {
+        server->focused_view = NULL;
+    }
 }
 
 static void view_destroy_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_view *view = wl_container_of(listener, view, destroy);
+    struct stratwm_server *server = view->server;
+
+    /* Clean up titlebar elements (Phase 8.8) */
+    destroy_titlebar(view);
+
+    /* Clean up from tiling tree if still present */
+    struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+    if (ws->root) {
+        ws->root = tile_remove(ws->root, view);
+        tile_reflow_scene(ws->root);
+    }
+
     wl_list_remove(&view->map.link);
     wl_list_remove(&view->unmap.link);
     wl_list_remove(&view->destroy.link);
@@ -214,6 +832,7 @@ static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *d
 
     view->server = server;
     view->xdg_toplevel = xdg_toplevel;
+    view->workspace_id = server->current_workspace;  /* Assign to current workspace */
     view->scene_tree = wlr_scene_xdg_surface_create(&server->scene->tree,
         xdg_toplevel->base);
 
@@ -235,11 +854,193 @@ static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *d
     wl_list_insert(&server->views, &view->link);
 }
 
+/* Workspace switching (Phase 8.2+) */
+static void switch_workspace(struct stratwm_server *server, int workspace_id) {
+    if (workspace_id < 0 || workspace_id >= STRATWM_WORKSPACES) return;
+    if (workspace_id == server->current_workspace) return;
+
+    /* Hide all views from old workspace */
+    struct stratwm_view *view;
+    wl_list_for_each(view, &server->views, link) {
+        if (view->workspace_id == server->current_workspace) {
+            wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+        }
+    }
+
+    /* Switch workspace */
+    server->current_workspace = workspace_id;
+
+    /* Show/hide views based on new workspace's layout mode (Phase 8.6) */
+    struct stratwm_workspace *new_ws = &server->workspaces[workspace_id];
+    wl_list_for_each(view, &server->views, link) {
+        if (view->workspace_id != server->current_workspace) continue;
+        
+        bool visible = true;
+        if (!view->is_floating) {
+            switch (new_ws->layout) {
+                case LAYOUT_BSP:
+                    visible = true;
+                    break;
+                case LAYOUT_STACK:
+                case LAYOUT_FULLSCREEN:
+                    /* Will set properly after focus_view call */
+                    visible = false;
+                    break;
+            }
+        } else {
+            visible = true; /* Floating windows always visible */
+        }
+        
+        wlr_scene_node_set_enabled(&view->scene_tree->node, visible);
+    }
+
+    /* Update focus to first view in new workspace */
+    server->focused_view = NULL;
+    struct stratwm_view *first_view = NULL;
+    wl_list_for_each(view, &server->views, link) {
+        if (view->workspace_id == server->current_workspace) {
+            first_view = view;
+            break;
+        }
+    }
+    if (first_view) {
+        wlr_scene_node_set_enabled(&first_view->scene_tree->node, true);
+        focus_view(first_view, first_view->xdg_toplevel->base->surface);
+    }
+}
+
+/* Float toggle: escape from tiling for single window (Phase 8.5) */
+static void toggle_float(struct stratwm_server *server, struct stratwm_view *view) {
+    if (!view) return;
+
+    struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+
+    if (!view->is_floating) {
+        /* Tiled → floating: remove from tree, save current position */
+        if (ws->root) {
+            ws->root = tile_remove(ws->root, view);
+            tile_reflow_scene(ws->root);
+        }
+        view->is_floating = true;
+
+        /* Position floating window: center of screen or 100,100 offset */
+        struct stratwm_output *output = NULL;
+        wl_list_for_each(output, &server->outputs, link) {
+            view->float_x = 100;
+            view->float_y = 100;
+            break;
+        }
+        wlr_scene_node_set_position(&view->scene_tree->node,
+            view->float_x, view->float_y);
+    } else {
+        /* Floating → tiled: re-insert into tree */
+        view->is_floating = false;
+
+        if (!ws->root) {
+            struct wlr_box output_box = {0, 0, 1920, 1080};
+            struct stratwm_output *output;
+            wl_list_for_each(output, &server->outputs, link) {
+                output_box.width = output->wlr_output->width;
+                output_box.height = output->wlr_output->height;
+                break;
+            }
+            ws->root = tile_new(output_box);
+        }
+
+        if (ws->root) {
+            ws->root = tile_insert(ws->root, view, ws->root->geometry);
+            tile_reflow_scene(ws->root);
+        }
+    }
+}
+
+/* Maximize floating window to fill screen (Phase 8.5) */
+static void maximize_float_window(struct stratwm_server *server, struct stratwm_view *view) {
+    if (!view || !view->is_floating) return;
+
+    /* Expand to full output size */
+    struct stratwm_output *output = NULL;
+    wl_list_for_each(output, &server->outputs, link) {
+        /* Position at output top-left in layout coordinates */
+        double ox = 0.0, oy = 0.0;
+        wlr_output_layout_output_coords(server->output_layout, output->wlr_output, &ox, &oy);
+        view->float_x = (int)ox;
+        view->float_y = (int)oy;
+        
+        /* Resize surface to output dimensions */
+        wlr_xdg_toplevel_set_size(view->xdg_toplevel,
+            output->wlr_output->width, output->wlr_output->height);
+        
+        wlr_scene_node_set_position(&view->scene_tree->node,
+            view->float_x, view->float_y);
+        break;
+    }
+}
+
+/* Layout switching: cycle through BSP/Stack/Fullscreen (Phase 8.6) */
+static void cycle_layout(struct stratwm_server *server) {
+    struct stratwm_workspace *ws = &server->workspaces[server->current_workspace];
+    
+    /* Cycle layout: BSP → Stack → Fullscreen → BSP */
+    ws->layout = (ws->layout + 1) % 3;
+    
+    /* Update visibility of all windows based on new layout mode */
+    struct stratwm_view *view;
+    wl_list_for_each(view, &server->views, link) {
+        if (view->workspace_id != server->current_workspace || view->is_floating) {
+            continue; /* Skip views in other workspaces or floating windows */
+        }
+        
+        bool visible = true;
+        switch (ws->layout) {
+            case LAYOUT_BSP:
+                /* All tiled windows visible */
+                visible = true;
+                break;
+            case LAYOUT_STACK:
+                /* Only focused window visible in stack mode */
+                visible = (view == server->focused_view);
+                break;
+            case LAYOUT_FULLSCREEN:
+                /* Only focused window visible in fullscreen mode */
+                visible = (view == server->focused_view);
+                break;
+        }
+        
+        wlr_scene_node_set_enabled(&view->scene_tree->node, visible);
+    }
+}
+
 static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
     uint32_t modifiers) {
-    (void)modifiers;
 
-    /* F1 = spawn terminal, F2 = exit (testing keybinds — Super is eaten by host WM) */
+    /* Primary keybindings: Super+key (spec per Task F Phase 8.1) */
+    bool super_pressed = (modifiers & WLR_MODIFIER_LOGO) != 0;
+    bool shift_pressed = (modifiers & WLR_MODIFIER_SHIFT) != 0;
+
+    /* Super+Return = spawn terminal */
+    if (super_pressed && sym == XKB_KEY_Return) {
+        spawn_terminal();
+        return true;
+    }
+
+    /* Super+Q = close focused window */
+    if (super_pressed && (sym == XKB_KEY_q || sym == XKB_KEY_Q)) {
+        struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
+        struct stratwm_view *view = view_from_surface(server, focused);
+        if (view != NULL) {
+            wlr_xdg_toplevel_send_close(view->xdg_toplevel);
+        }
+        return true;
+    }
+
+    /* Super+Shift+E = exit compositor */
+    if (super_pressed && shift_pressed && (sym == XKB_KEY_e || sym == XKB_KEY_E)) {
+        wl_display_terminate(server->wl_display);
+        return true;
+    }
+
+    /* Fallback F-keys for testing in host WM contexts (Super key often intercepted by host) */
     if (sym == XKB_KEY_F1) {
         spawn_terminal();
         return true;
@@ -256,6 +1057,89 @@ static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
         if (view != NULL) {
             wlr_xdg_toplevel_send_close(view->xdg_toplevel);
         }
+        return true;
+    }
+
+    /* Focus navigation: arrow keys cycle through tiles */
+    if (super_pressed && (sym == XKB_KEY_Right || sym == XKB_KEY_l)) {
+        if (server->focused_view) {
+            struct stratwm_tile *current = 
+                tile_find_view(server->workspaces[server->current_workspace].root,
+                    server->focused_view);
+            if (current) {
+                struct stratwm_tile *next = tile_next_leaf(current);
+                if (next && next->view) {
+                    server->focused_view = next->view;
+                    focus_view(next->view, next->view->xdg_toplevel->base->surface);
+                }
+            }
+        }
+        return true;
+    }
+
+    if (super_pressed && (sym == XKB_KEY_Left || sym == XKB_KEY_h)) {
+        if (server->focused_view) {
+            struct stratwm_tile *current =
+                tile_find_view(server->workspaces[server->current_workspace].root,
+                    server->focused_view);
+            if (current) {
+                struct stratwm_tile *prev = tile_prev_leaf(current);
+                if (prev && prev->view) {
+                    server->focused_view = prev->view;
+                    focus_view(prev->view, prev->view->xdg_toplevel->base->surface);
+                }
+            }
+        }
+        return true;
+    }
+
+    /* Float toggle: Super+F escapes/returns to tiling (Phase 8.5) */
+    if (super_pressed && (sym == XKB_KEY_f || sym == XKB_KEY_F)) {
+        if (server->focused_view) {
+            toggle_float(server, server->focused_view);
+        }
+        return true;
+    }
+
+    /* Maximize floating window: Super+M (Phase 8.5) */
+    if (super_pressed && (sym == XKB_KEY_m || sym == XKB_KEY_M)) {
+        if (server->focused_view) {
+            maximize_float_window(server, server->focused_view);
+        }
+        return true;
+    }
+
+    /* Cycle layout mode: Super+Space (BSP → Stack → Fullscreen → BSP) (Phase 8.6) */
+    if (super_pressed && sym == XKB_KEY_space) {
+        cycle_layout(server);
+        return true;
+    }
+
+    /* Tile resizing with Super+Shift+{H,J,K,L} (Phase 8.7) */
+    if (super_pressed && shift_pressed) {
+        int delta = 50;  /* pixel adjustment per keypress */
+        if (sym == XKB_KEY_h || sym == XKB_KEY_H) {
+            resize_tile_horizontal(server, -delta);  /* Shrink right, grow left */
+            return true;
+        }
+        if (sym == XKB_KEY_l || sym == XKB_KEY_L) {
+            resize_tile_horizontal(server, delta);   /* Grow right, shrink left */
+            return true;
+        }
+        if (sym == XKB_KEY_j || sym == XKB_KEY_J) {
+            resize_tile_vertical(server, delta);     /* Grow bottom, shrink top */
+            return true;
+        }
+        if (sym == XKB_KEY_k || sym == XKB_KEY_K) {
+            resize_tile_vertical(server, -delta);    /* Shrink bottom, grow top */
+            return true;
+        }
+    }
+
+    /* Workspace switching: Super+1 through Super+9 */
+    if (super_pressed && sym >= XKB_KEY_1 && sym <= XKB_KEY_9) {
+        int workspace = sym - XKB_KEY_1;  /* 0-8 for keys 1-9 */
+        switch_workspace(server, workspace);
         return true;
     }
 
@@ -335,6 +1219,34 @@ static void cursor_motion_absolute_notify(struct wl_listener *listener, void *da
 static void cursor_button_notify(struct wl_listener *listener, void *data) {
     struct stratwm_server *server = wl_container_of(listener, server, cursor_button);
     struct wlr_pointer_button_event *event = data;
+
+    /* Check for titlebar button clicks (Phase 8.8) */
+    if (event->state == WLR_BUTTON_PRESSED && server->focused_view) {
+        struct stratwm_view *view = server->focused_view;
+        double cursor_x = server->cursor->x;
+        double cursor_y = server->cursor->y;
+
+        /* Convert to view-relative coordinates */
+        double view_x = cursor_x - view->scene_tree->node.x;
+        double view_y = cursor_y - view->scene_tree->node.y;
+
+        /* Dynamic hit-test based on current scene-node button positions. */
+        if (point_in_titlebar_button(view->close_button, view_x, view_y)) {
+            wlr_xdg_toplevel_send_close(view->xdg_toplevel);
+            return;
+        }
+
+        if (point_in_titlebar_button(view->max_button, view_x, view_y)) {
+            toggle_float(server, view);
+            return;
+        }
+
+        if (point_in_titlebar_button(view->min_button, view_x, view_y)) {
+            /* For now, just close on minimize (can be improved later) */
+            wlr_xdg_toplevel_send_close(view->xdg_toplevel);
+            return;
+        }
+    }
 
     wlr_seat_pointer_notify_button(server->seat, event->time_msec,
         event->button, event->state);
@@ -417,6 +1329,16 @@ int main(void) {
     wl_list_init(&server.views);
     wl_list_init(&server.keyboards);
 
+    /* Initialize workspaces (Phase 8.2) */
+    server.current_workspace = 0;
+    for (int i = 0; i < STRATWM_WORKSPACES; i++) {
+        server.workspaces[i].id = i;
+        server.workspaces[i].root = NULL;
+        server.workspaces[i].focused = NULL;
+        server.workspaces[i].layout = LAYOUT_BSP;  /* Default to BSP layout (Phase 8.6) */
+    }
+    server.focused_view = NULL;
+
     server.wl_display = wl_display_create();
     if (server.wl_display == NULL) {
         fprintf(stderr, "stratwm: failed to create wl_display\n");
@@ -483,6 +1405,7 @@ int main(void) {
     }
 
     fprintf(stderr, "stratwm: started (%s)\n", socket);
+    spawn_autostart("/bin/foot");
     wl_display_run(server.wl_display);
 
     wl_list_remove(&server.new_xdg_toplevel.link);
@@ -496,5 +1419,13 @@ int main(void) {
 
     wl_display_destroy_clients(server.wl_display);
     wl_display_destroy(server.wl_display);
+
+    /* Clean up workspace trees (Phase 8.2) */
+    for (int i = 0; i < STRATWM_WORKSPACES; i++) {
+        if (server.workspaces[i].root) {
+            tile_free(server.workspaces[i].root);
+        }
+    }
+
     return 0;
 }

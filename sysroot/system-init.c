@@ -168,6 +168,34 @@ static void probe_dynamic_linker(const char *path) {
     (void)waitpid(pid, &status, 0);
 }
 
+static pid_t spawn_seatd(void) {
+    if (access("/bin/seatd", X_OK) != 0) {
+        log_status("seatd not found, skipping");
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        log_status("fork seatd failed");
+        return -1;
+    }
+    if (pid == 0) {
+        char *const argv[] = {"/bin/seatd", NULL};
+        execv("/bin/seatd", argv);
+        _exit(127);
+    }
+    log_status("seatd spawned");
+    return pid;
+}
+
+static int wait_for_socket(const char *path, int retries, int delay_ms) {
+    struct stat st;
+    for (int i = 0; i < retries; i++) {
+        if (stat(path, &st) == 0) return 0;
+        usleep((useconds_t)delay_ms * 1000);
+    }
+    return -1;
+}
+
 static void emergency_shell(void) {
     char line[512];
     log_status("entering emergency shell");
@@ -233,9 +261,9 @@ int main(void) {
     attach_console_stdio();
     log_status("start");
     setenv("XDG_RUNTIME_DIR", "/run", 1);
-    setenv("LIBSEAT_BACKEND", "noop", 1);
-    unsetenv("WLR_SESSION");
-    unsetenv("WLR_DIRECT_TTY");
+    unsetenv("LIBSEAT_BACKEND");
+    unsetenv("SEATD_SOCK");
+    setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
     setenv("WLR_RENDERER_ALLOW_SOFTWARE", "1", 1);
     setenv("WLR_RENDERER", "pixman", 1);
     setenv("LD_LIBRARY_PATH", "/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu", 1);
@@ -256,6 +284,16 @@ int main(void) {
     mount_best_effort("sys", "/sys", "sysfs", 0, NULL);
     mount_best_effort("dev", "/dev", "devtmpfs", 0, NULL);
     mount_best_effort("tmpfs", "/run", "tmpfs", 0, "mode=755");
+
+    probe_file("/bin/seatd");
+    spawn_seatd();
+    if (wait_for_socket("/run/seatd.sock", 50, 10) == 0) {
+        log_status("seatd socket ready");
+        setenv("LIBSEAT_BACKEND", "seatd", 1);
+        setenv("SEATD_SOCK", "/run/seatd.sock", 1);
+    } else {
+        log_status("seatd socket timeout, continuing anyway");
+    }
 
     run_once_if_present("/bin/strat-validate-boot");
 
