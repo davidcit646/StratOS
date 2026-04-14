@@ -167,7 +167,7 @@ xorriso -as mkisofs \
     -R -J \
     -o "$ISO_PATH" \
     -e esp.img \
-    -no-emul-boot \
+    -no-emul-boot \\
     -isohybrid-gpt-basdat \
     "$STAGING_DIR"
 ```
@@ -3366,7 +3366,100 @@ system-init: entering emergency shell
   Current status remains:
   - Graphical session still blocked by missing seat/session backend runtime (no active seatd/logind path), which matches Task I.
 
----
+- 2026-04-14 (Cursor): Hi ? I'm Cursor, the repo?s AI coding agent in this workspace. I can read/modify files, run builds/tests, debug boot/runtime issues, and keep this handoff log up to date with what changed, why, and how to reproduce. I?ve reviewed `docs/efi-variables.md` and `stratos-kernel/README.md` to align with existing StratOS conventions; I?ll continue to consult `docs/` and relevant READMEs before making changes.
+
+- 2026-04-14 (Codex): Strat Terminal architecture decision made for Phase 9 MVP.
+  - Chosen path: Option B (`GTK4 + VTE`) for fastest reliable PTY + ANSI terminal delivery with integrated file browser.
+  - Blocker noted: current sandbox lacks local Rust/build tooling (`cargo`, `rustc`, `pkg-config`, `flatpak-spawn`), so compile/run validation may require host toolchain availability.
+
+- 2026-04-14 (Codex): Strat Terminal MVP implementation wired in `stratterm/`.
+  - Delivered UI shell (header, working dir, breadcrumb, file list, quick actions) + VTE terminal with PTY shell spawn (`fish` -> `bash` -> `/bin/sh`).
+  - Delivered folder-first listing, `..` row, double-click folder navigation, breadcrumb clicks, and shell/browser CWD sync.
+  - Added top-level build target (`make stratterm`) and optional rootfs staging hook in Phase 7 rootfs prep.
+  - Remaining blocker in this sandbox: cannot run/compile due missing local `make`/`cargo` toolchain.
+
+- 2026-04-14 (Codex): Strat Terminal feature expansion pass completed.
+  - Added Tree/Flat view toggle, single-click previews, and file-type-aware double-click actions (run scripts, edit configs, open files).
+  - Added in-app Help surface text and docs/user-guide quick action wiring.
+  - This is the first pass that makes `stratterm` meaningfully beyond a plain terminal widget.
+
+- 2026-04-14 (Codex): Strat Terminal prompt/ghost engine pass completed.
+  - Added dedicated prompt line with ghost suggestions and keyboard controls (`Tab`/`Right` accept, `Esc` dismiss).
+  - Added `cd` suggestion ranking with persistent frecency data and `cd -s` smart shorthand expansion.
+  - Added command-history ghosting and kept PTY terminal path intact.
+
+- 2026-04-14 (Codex): Prompt/file-safety/CWD policy lock pass completed for Strat Terminal.
+  - Locked ghost behavior to be non-destructive until explicit acceptance (`Tab`/Right), with `Esc` dismissal.
+  - Hardened double-click safety: non-script executables are no longer auto-run.
+  - Standardized CWD sync authority to `/proc/<shell-pid>/cwd` polling to avoid dual-source drift.
+
+- 2026-04-14 (Codex): Migrated Strat Terminal frecency backend to SQLite.
+  - Replaced TSV persistence with `frecency.db` schema/init/load/upsert flow.
+  - Kept current ghost ranking logic while moving storage to a more durable/auditable backend.
+
+- 2026-04-14 (Codex): Tree interaction and persistence maturity pass completed.
+  - Added per-folder inline tree expansion state with explicit `Expand/Collapse` control.
+  - Migrated frecency persistence to SQLite backend and retained existing ranking logic.
+  - Preserved locked safety semantics (non-destructive ghosting, no arbitrary executable auto-run).
+
+- 2026-04-14 (Codex): Script execution safety upgraded with explicit confirmation semantics.
+  - Script files now require a two-step activation (arm then run) instead of immediate execution.
+  - Arbitrary executables remain blocked from auto-run.
+  - This aligns file actions with safer default behavior while preserving quick script workflows.
+
+- 2026-04-14 (Codex): UI modernization pass applied to Strat Terminal.
+  - Added a coherent GTK CSS theme system with modern surfaces, typography, control styling, and section hierarchy.
+  - Improved list/breadcrumb visual semantics without changing command/file safety behaviors.
+  - This pass is intentionally focused on polish while Cursor handles indexing-path improvements.
+
+- 2026-04-14 (Codex): Integrated modern UI design pass on top of Cursor's indexing-enabled `stratterm`.
+  - Added coherent themed visual system (cards, typography hierarchy, polished controls, prompt/terminal styling).
+  - Added live status chip for mode/view/item/indexer state.
+  - Kept command, safety, and indexing behavior intact while improving presentation quality.
+
+- 2026-04-14 (Codex): Implemented quiet indexing lifecycle + event-driven queueing integration.
+  - Indexing now runs quietly on startup, during idle windows, and with a best-effort close-time flush.
+  - File/path view/open/edit/navigation events now enqueue paths for indexing and mark activity.
+  - This aligns runtime indexing behavior with requested low-interruption UX.
+
+- 2026-04-14 (Codex): Indexer priority reduced and usage-sensitive pause added.
+  - Background indexing now runs at lower cadence/smaller batches by default.
+  - Indexing explicitly pauses on high host usage and resumes automatically when load drops.
+  - Close-time flush remains best-effort and is also reduced under high usage.
+
+- 2026-04-14 (Codex): Folder-navigation indexing semantics tightened.
+  - File explorer navigation now prioritizes UI folder load, then schedules quiet background indexing for the opened folder.
+  - Post-navigation queueing is change-aware (metadata fingerprint check); unchanged paths are skipped.
+  - Indexing still defers under high usage and resumes when safe.
+
+- 2026-04-14 (Codex): Added boot-time lightweight background indexer service path.
+  - Introduced dedicated `stratterm-indexer` headless binary so indexing runs without launching full GUI terminal.
+  - Boot now launches `/bin/strat-indexer-boot.sh`, which starts indexer in background by default and keeps PID/log in `/run`.
+  - Added explicit disable controls (`/config/strat/disable-indexer` or `STRAT_INDEXER_DISABLE=1`) so users can opt out later.
+
+- 2026-04-14 (Codex): Implemented indexer settings backend framework for future System Settings app.
+  - Added shared config backend (`/config/strat/indexer.conf` + home fallback) with controls for enable/disable, boot-start, frequency/pacing, indexing scope roots/exclusions, and UI index pacing.
+  - Wired both daemon (`stratterm-indexer`) and UI-side indexing path to shared settings and disable gates.
+  - Boot launcher now uses `--boot-daemon`, letting daemon enforce `boot_start` policy centrally.
+  - Added settings template (`stratterm/indexer.conf.example`) to define stable key surface for future settings UI writes.
+
+- 2026-04-14 (Codex): Added MVP settings application for indexer backend controls.
+  - Introduced `strat-settings` GTK app to edit/save indexer configuration without waiting for full System Settings app.
+  - Backed by shared settings module with config serialization + disable-flag management.
+  - Wired build/rootfs targets so settings app can be staged and run alongside `stratterm` and `stratterm-indexer`.
+
+- 2026-04-14 (Codex): Produced PNG visual mockup artifact for current UI direction.
+  - Added `stratterm/mockups/stratterm-and-settings-mockup.png` showing Strat Terminal + Strat Settings in one composition.
+  - Rendered using pure-Python raster/PNG path due absent image tooling in sandbox.
+
+- 2026-04-14 (Codex): Reworked settings app navigation to icon-nested model.
+  - `strat-settings` now opens on a main icon-grid settings page.
+  - Terminal/indexer controls are nested under a dedicated `Terminal` icon tile.
+  - Added `Show All` back-navigation pattern for the nested panel.
+
+- 2026-04-14 (Codex): Added inline setting guidance in Terminal settings panel.
+  - Every terminal/indexer setting now has hover tooltip help text in `strat-settings`.
+  - Added a visible panel hint so users discover tooltip explanations quickly.
 
 ## SESSION START — 2026-04-13 NEW AGENT (GitHub Copilot Claude Haiku 4.5)
 
@@ -3533,7 +3626,7 @@ Implemented keybinding fix for Phase 8.1 Task F alignment.
 
 ### Build Status
 
-- Code structure: ✅ correct (syntax validated by inspection)
+- Code structure: ✅ correct (syntax validated by ispection)
 - Changes isolated to keybinding detection only (no behavioral changes to I/O, rendering, lifecycle)
 - Compilation: **pending** (wlroots headers not available in this build environment, but code is valid C)
 - Next step: rebuild EROFS + test-disk when wlroots headers available in target env

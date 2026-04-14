@@ -8,6 +8,10 @@ FIRST_BOOT_SOURCE="$REPO_ROOT/sysroot/first-boot-provision.sh"
 VALIDATE_SERVICE_SOURCE="$REPO_ROOT/services/systemd/strat-validate-boot.service"
 VALIDATE_BIN_SOURCE="$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/strat-validate-boot"
 STRATWM_BIN_SOURCE="${STRATWM_BIN_SOURCE:-$REPO_ROOT/stratvm/stratwm}"
+STRATTERM_BIN_SOURCE="${STRATTERM_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/stratterm}"
+STRATTERM_INDEXER_BIN_SOURCE="${STRATTERM_INDEXER_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/stratterm-indexer}"
+STRAT_SETTINGS_BIN_SOURCE="${STRAT_SETTINGS_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/strat-settings}"
+STRATTERM_INDEXER_BOOT_SOURCE="$REPO_ROOT/sysroot/strat-indexer-boot.sh"
 SHELL_BIN_SOURCE="${SHELL_BIN_SOURCE:-/bin/sh}"
 SEATD_BIN_SOURCE="${SEATD_BIN_SOURCE:-$REPO_ROOT/third_party/seatd/build/seatd}"
 FOOT_BIN_SOURCE="${FOOT_BIN_SOURCE:-/usr/bin/foot}"
@@ -283,6 +287,26 @@ if [ -x "$STRATWM_BIN_SOURCE" ]; then
     chmod 0755 "$ROOTFS_DIR/bin/stratwm"
 fi
 
+if [ -x "$STRATTERM_BIN_SOURCE" ]; then
+    cp -aL "$STRATTERM_BIN_SOURCE" "$ROOTFS_DIR/bin/stratterm"
+    chmod 0755 "$ROOTFS_DIR/bin/stratterm"
+fi
+
+if [ -x "$STRATTERM_INDEXER_BIN_SOURCE" ]; then
+    cp -aL "$STRATTERM_INDEXER_BIN_SOURCE" "$ROOTFS_DIR/bin/stratterm-indexer"
+    chmod 0755 "$ROOTFS_DIR/bin/stratterm-indexer"
+fi
+
+if [ -x "$STRAT_SETTINGS_BIN_SOURCE" ]; then
+    cp -aL "$STRAT_SETTINGS_BIN_SOURCE" "$ROOTFS_DIR/bin/strat-settings"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-settings"
+fi
+
+if [ -f "$STRATTERM_INDEXER_BOOT_SOURCE" ]; then
+    cp "$STRATTERM_INDEXER_BOOT_SOURCE" "$ROOTFS_DIR/bin/strat-indexer-boot.sh"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-indexer-boot.sh"
+fi
+
 if [ -x "$SHELL_BIN_SOURCE" ]; then
     cp -aL "$SHELL_BIN_SOURCE" "$ROOTFS_DIR/bin/sh"
     chmod 0755 "$ROOTFS_DIR/bin/sh"
@@ -342,6 +366,15 @@ fi
 
 if [ -x "$ROOTFS_DIR/bin/stratwm" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/stratwm" >> "$ROOTFS_DIR/.runtime.queue"
+fi
+if [ -x "$ROOTFS_DIR/bin/stratterm" ]; then
+    printf '%s\n' "$ROOTFS_DIR/bin/stratterm" >> "$ROOTFS_DIR/.runtime.queue"
+fi
+if [ -x "$ROOTFS_DIR/bin/stratterm-indexer" ]; then
+    printf '%s\n' "$ROOTFS_DIR/bin/stratterm-indexer" >> "$ROOTFS_DIR/.runtime.queue"
+fi
+if [ -x "$ROOTFS_DIR/bin/strat-settings" ]; then
+    printf '%s\n' "$ROOTFS_DIR/bin/strat-settings" >> "$ROOTFS_DIR/.runtime.queue"
 fi
 if [ -x "$ROOTFS_DIR/bin/sh" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/sh" >> "$ROOTFS_DIR/.runtime.queue"

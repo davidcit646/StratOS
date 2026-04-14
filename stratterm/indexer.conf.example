@@ -1,0 +1,33 @@
+# StratOS indexer backend settings
+# Copy to /config/strat/indexer.conf (preferred) or ~/.config/strat/indexer.conf.
+#
+# Boolean values: true/false, yes/no, on/off, 1/0
+# Paths are comma-separated absolute prefixes.
+
+# Master toggle for all indexing features (daemon + UI indexing paths).
+enabled=true
+
+# Start boot daemon from PID1 bootstrap path.
+boot_start=true
+
+# Headless daemon pacing.
+frequency_ms=1200
+rescan_secs=180
+batch_limit=96
+
+# Pause indexing when 1-minute load average / CPU core count exceeds this value.
+high_usage_load_per_cpu=0.85
+
+# Index include/exclude scope.
+roots=/home,/config,/apps
+exclude_prefixes=
+
+# UI-side indexer behavior.
+ui_enabled=true
+ui_tick_ms=750
+ui_batch_limit=80
+ui_idle_after_secs=12
+ui_startup_grace_secs=8
+ui_post_nav_delay_ms=180
+ui_post_nav_scan_limit=1200
+ui_post_nav_force_secs=6
