@@ -1,0 +1,45 @@
+# Build outputs
+out/
+*.raw
+*.img
+*.iso
+
+# Kernel source tree (external, not part of StratOS source)
+linux/
+
+# OVMF runtime vars (machine-specific UEFI state)
+ovmf_vars.fd
+
+# Compiled objects and binaries
+*.o
+*.a
+*.so
+*.so.*
+
+# EFI build artifacts
+stratboot/efi/*.so
+stratboot/efi/*.efi
+stratboot/src/*.o
+stratboot/efi/*.o
+
+# Rust build artifacts
+stratsup/target/
+stratvm/target/
+
+# stratwm compiled binary (reproducible from source)
+stratvm/stratwm
+stratvm/src/*.o
+stratvm/xdg-shell-protocol.h
+
+# spotlite build artifacts
+spotlite/target/
+
+# stratterm build artifacts
+stratterm/target/
+
+# Claude Code project settings (local only)
+.claude/
+
+# Misc
+*.tmp
+.DS_Store

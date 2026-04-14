@@ -1,0 +1,16 @@
+[package]
+name = "stratsup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.10"
+ureq = { version = "2", features = ["tls"] }
+pgp = "0.14"
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true

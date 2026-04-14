@@ -1,0 +1,13 @@
+[Unit]
+Description=StratOS boot validation
+DefaultDependencies=no
+After=local-fs.target
+Before=basic.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/strat-validate-boot
+TimeoutSec=30
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=StratOS Supervisor Service
+DefaultDependencies=no
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/boot/efi/strat/stratsup
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stratsup
+
+[Install]
+WantedBy=multi-user.target

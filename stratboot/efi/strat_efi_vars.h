@@ -1,0 +1,42 @@
+#ifndef STRAT_EFI_VARS_H
+#define STRAT_EFI_VARS_H
+
+#include <efi.h>
+#include <efilib.h>
+
+// StratOS EFI namespace GUID: 10731b6f-16b5-4aea-ab46-c62aa093c8e5
+#define STRAT_EFI_NAMESPACE_GUID                           \
+    {                                                       \
+        0x10731b6f, 0x16b5, 0x4aea,                         \
+        { 0xab, 0x46, 0xc6, 0x2a, 0xa0, 0x93, 0xc8, 0xe5 }  \
+    }
+
+#define STRAT_EFI_VAR_NAME_SLOT_A_STATUS  L"STRAT_SLOT_A_STATUS"
+#define STRAT_EFI_VAR_NAME_SLOT_B_STATUS  L"STRAT_SLOT_B_STATUS"
+#define STRAT_EFI_VAR_NAME_SLOT_C_STATUS  L"STRAT_SLOT_C_STATUS"
+#define STRAT_EFI_VAR_NAME_ACTIVE_SLOT    L"STRAT_ACTIVE_SLOT"
+#define STRAT_EFI_VAR_NAME_PINNED_SLOT    L"STRAT_PINNED_SLOT"
+#define STRAT_EFI_VAR_NAME_RESET_FLAGS    L"STRAT_RESET_FLAGS"
+#define STRAT_EFI_VAR_NAME_BOOT_COUNT     L"STRAT_BOOT_COUNT"
+#define STRAT_EFI_VAR_NAME_LAST_GOOD_SLOT L"STRAT_LAST_GOOD_SLOT"
+#define STRAT_EFI_VAR_NAME_HOME_STATUS    L"STRAT_HOME_STATUS"
+
+#define STRAT_EFI_VAR_ATTRS \
+    (EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS)
+
+EFI_GUID strat_efi_namespace_guid(void);
+
+EFI_STATUS strat_efi_get_u8(
+    EFI_RUNTIME_SERVICES *rt,
+    CHAR16 *name,
+    UINT8 *out_value
+);
+
+EFI_STATUS strat_efi_set_u8(
+    EFI_RUNTIME_SERVICES *rt,
+    CHAR16 *name,
+    UINT8 value,
+    UINT32 attrs
+);
+
+#endif
