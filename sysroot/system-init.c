@@ -258,6 +258,7 @@ int main(void) {
     mount_best_effort("tmpfs", "/run", "tmpfs", 0, "mode=755");
 
     run_once_if_present("/bin/strat-validate-boot");
+    run_once_if_present("/bin/strat-indexer-boot.sh");
 
     // Keep PID 1 alive: spawn boot target as a child and observe exit status.
     // If stratwm exits quickly, fall back to a shell instead of panicking.
