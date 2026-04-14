@@ -138,7 +138,7 @@ int main(void) {
     log_status("bind-mounted /var");
     mount_or_die("tmpfs", "/run", "tmpfs", 0, "mode=755", "mount /run");
     log_status("mounted /run");
-    mount_or_die("/system", "/usr", NULL, MS_BIND, NULL, "bind /usr");
+    mount_or_die("/system/usr", "/usr", NULL, MS_BIND, NULL, "bind /usr");
     log_status("bind-mounted /usr");
 
     mount_or_die("/dev", "/system/dev", NULL, MS_MOVE, NULL, "move /dev");

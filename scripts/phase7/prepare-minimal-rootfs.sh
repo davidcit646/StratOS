@@ -13,6 +13,12 @@ STRATTERM_INDEXER_BIN_SOURCE="${STRATTERM_INDEXER_BIN_SOURCE:-$REPO_ROOT/stratte
 STRAT_SETTINGS_BIN_SOURCE="${STRAT_SETTINGS_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/strat-settings}"
 STRATTERM_INDEXER_BOOT_SOURCE="$REPO_ROOT/sysroot/strat-indexer-boot.sh"
 SHELL_BIN_SOURCE="${SHELL_BIN_SOURCE:-/bin/sh}"
+SEATD_BIN_SOURCE="${SEATD_BIN_SOURCE:-$REPO_ROOT/third_party/seatd/build/seatd}"
+FOOT_BIN_SOURCE="${FOOT_BIN_SOURCE:-/usr/bin/foot}"
+
+if [ ! -x "$SEATD_BIN_SOURCE" ] && [ -x "/usr/sbin/seatd" ]; then
+    SEATD_BIN_SOURCE="/usr/sbin/seatd"
+fi
 
 usage() {
     cat <<USAGE
@@ -112,7 +118,7 @@ runtime_collect_deps() {
     verbose=0
     strict=0
     case "$bin_path" in
-        "$ROOTFS_DIR/bin/stratwm"|"$ROOTFS_DIR/bin/sh")
+        "$ROOTFS_DIR/bin/stratwm"|"$ROOTFS_DIR/bin/sh"|"$ROOTFS_DIR/bin/foot")
             verbose=1
             strict=1
             ;;
@@ -270,6 +276,12 @@ runtime_stage_dep() {
     fi
 }
 
+: > "$ROOTFS_DIR/.runtime.queue"
+: > "$ROOTFS_DIR/.runtime.seen"
+: > "$ROOTFS_DIR/.runtime.deps"
+: > "$ROOTFS_DIR/.runtime.searchdirs"
+: > "$ROOTFS_DIR/.runtime.libdirs"
+
 if [ -x "$STRATWM_BIN_SOURCE" ]; then
     cp -aL "$STRATWM_BIN_SOURCE" "$ROOTFS_DIR/bin/stratwm"
     chmod 0755 "$ROOTFS_DIR/bin/stratwm"
@@ -300,11 +312,57 @@ if [ -x "$SHELL_BIN_SOURCE" ]; then
     chmod 0755 "$ROOTFS_DIR/bin/sh"
 fi
 
-: > "$ROOTFS_DIR/.runtime.queue"
-: > "$ROOTFS_DIR/.runtime.seen"
-: > "$ROOTFS_DIR/.runtime.deps"
-: > "$ROOTFS_DIR/.runtime.searchdirs"
-: > "$ROOTFS_DIR/.runtime.libdirs"
+if [ -x "$SEATD_BIN_SOURCE" ]; then
+    cp -aL "$SEATD_BIN_SOURCE" "$ROOTFS_DIR/bin/seatd"
+    chmod 0755 "$ROOTFS_DIR/bin/seatd"
+    printf '%s\n' "$ROOTFS_DIR/bin/seatd" >> "$ROOTFS_DIR/.runtime.queue"
+else
+    echo "Warning: seatd not found at $SEATD_BIN_SOURCE" >&2
+fi
+
+if [ -x "$FOOT_BIN_SOURCE" ]; then
+    cp -aL "$FOOT_BIN_SOURCE" "$ROOTFS_DIR/bin/foot"
+    chmod 0755 "$ROOTFS_DIR/bin/foot"
+    printf '%s\n' "$ROOTFS_DIR/bin/foot" >> "$ROOTFS_DIR/.runtime.queue"
+elif [ -x "/run/host/usr/bin/foot" ]; then
+    cp -aL "/run/host/usr/bin/foot" "$ROOTFS_DIR/bin/foot"
+    chmod 0755 "$ROOTFS_DIR/bin/foot"
+    printf '%s\n' "$ROOTFS_DIR/bin/foot" >> "$ROOTFS_DIR/.runtime.queue"
+else
+    echo "Warning: foot not found at $FOOT_BIN_SOURCE" >&2
+fi
+
+mkdir -p "$ROOTFS_DIR/usr/share/fonts" "$ROOTFS_DIR/etc/fonts"
+
+mono_font_src=""
+if command -v fc-list >/dev/null 2>&1; then
+    mono_font_src="$(fc-list | grep -i mono | head -1 | cut -d: -f1 || true)"
+fi
+if [ -z "$mono_font_src" ]; then
+    mono_font_src="$(find /usr/share/fonts -type f \( -name '*.ttf' -o -name '*.otf' \) | head -1 || true)"
+fi
+if [ -n "$mono_font_src" ] && [ -f "$mono_font_src" ]; then
+    cp -aL "$mono_font_src" "$ROOTFS_DIR/usr/share/fonts/"
+else
+    echo "Warning: no font file found under /usr/share/fonts" >&2
+fi
+
+cat > "$ROOTFS_DIR/etc/fonts/fonts.conf" <<'EOF'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>/usr/share/fonts</dir>
+</fontconfig>
+EOF
+
+mkdir -p "$ROOTFS_DIR/usr/share"
+if [ -d "/usr/share/libinput" ]; then
+    cp -a "/usr/share/libinput" "$ROOTFS_DIR/usr/share/"
+elif [ -d "/run/host/usr/share/libinput" ]; then
+    cp -a "/run/host/usr/share/libinput" "$ROOTFS_DIR/usr/share/"
+else
+    echo "Warning: libinput data directory not found on local or host paths" >&2
+fi
 
 if [ -x "$ROOTFS_DIR/bin/stratwm" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/stratwm" >> "$ROOTFS_DIR/.runtime.queue"
@@ -323,6 +381,9 @@ if [ -x "$ROOTFS_DIR/bin/sh" ]; then
 fi
 if [ -x "$ROOTFS_DIR/bin/stratwm" ]; then
     find_and_stage_required_lib "libwlroots-0.19.so"
+fi
+if [ -x "$ROOTFS_DIR/bin/foot" ]; then
+    find_and_stage_required_lib "libwayland-cursor.so.0"
 fi
 
 line_no=1

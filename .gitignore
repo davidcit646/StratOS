@@ -17,6 +17,7 @@ ovmf_vars.fd
 *.so.*
 
 # EFI build artifacts
+stratboot/BOOTX64.EFI
 stratboot/efi/*.so
 stratboot/efi/*.efi
 stratboot/src/*.o
@@ -26,8 +27,9 @@ stratboot/efi/*.o
 stratsup/target/
 stratvm/target/
 
-# stratwm compiled binary (reproducible from source)
+# Compiled binaries (reproducible from source)
 stratvm/stratwm
+sysroot/initramfs-init
 stratvm/src/*.o
 stratvm/xdg-shell-protocol.h
 
