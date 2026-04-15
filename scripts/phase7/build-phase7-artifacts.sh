@@ -9,6 +9,7 @@ SLOT_OUT="$OUT_DIR/slot-system.erofs"
 INIT_MODE="${INIT_MODE:-auto}"
 RUN_SMOKE=0
 SMOKE_SECONDS="${SMOKE_SECONDS:-20}"
+BUILD_STRATTERM_INDEXER="${BUILD_STRATTERM_INDEXER:-1}"
 
 usage() {
     cat <<USAGE
@@ -74,6 +75,10 @@ fi
 "$REPO_ROOT/scripts/phase7/build-initramfs.sh" \
     --init-mode "$INIT_MODE" \
     --output "$INITRAMFS_OUT"
+
+if [ "$BUILD_STRATTERM_INDEXER" = "1" ]; then
+    make -C "$REPO_ROOT/stratterm" release-indexer
+fi
 
 "$REPO_ROOT/scripts/phase7/prepare-minimal-rootfs.sh" \
     --rootfs-dir "$ROOTFS_DIR"

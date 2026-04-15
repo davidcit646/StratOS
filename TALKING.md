@@ -4585,4 +4585,400 @@ Non-issues observed (all expected in QEMU):
   - `libinput error: /usr/share/libinput: failed to find data files` no longer appears after the initramfs mount fix.
 
   Remaining known blocker:
-  - Cannot rebuild `stratvm/stratwm` in this environment (`wlroots pkg-config entry not found`), so compositor-side foot autostart verification remains blocked on toolchain availability.
+  - Cannot rebuild `stratvm/stratwm` in this environment (`wlroots pkg-config entry not found`), so compositor-side foot autostart verification remains blocked on toolchain availability.---
+- 2026-04-14 (Codex, BSP first-window audit update): added first-insert verification diagnostics for compositor tree wiring.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - Added `<assert.h>` include.
+     - In `view_map_notify()`:
+       - Detects first tiled insert per-workspace (`first_tiled_in_workspace`).
+       - Validates output geometry before `tile_new()` (fallback to 1920x1080 when invalid).
+       - Logs root initialization geometry.
+       - Checks `tile_insert()` return value.
+       - Verifies inserted view is discoverable via `tile_find_view()`.
+       - Logs whether first tiled view became `ws->root->view`.
+       - Adds assertion that inserted tile lookup is non-null.
+
+  Verified so far:
+  - Confirmed empty-leaf case already exists in `tile_insert()` and was not rewritten.
+  - Confirmed workspace roots are initialized to NULL in server setup and root is created on first tiled map.
+
+  Current pass/fail status:
+  - PASS: static code audit of BSP first-insert path and instrumentation wiring.
+  - FAIL (env-limited): full compositor compile in this environment still blocked (`wlroots pkg-config entry not found`).
+
+  Next narrow test to run:
+  - Boot desktop path and capture serial logs for these new markers:
+    - `workspace=<id> root initialized ...`
+    - `first tiled view inserted at workspace root ...`
+    - and absence of `ERROR view not found in BSP tree after insert`.
+---
+- 2026-04-14 (Codex, status checkpoint): objective confirmation + validation gate status.
+
+  Objective confirmation:
+  - Current focus is compositor BSP first-window insertion verification (not a new EFI path change).
+
+  Validation criterion check (from existing boot outputs):
+  - PASS on EFI boot-path completion with actual output evidence in:
+    - `out/phase7/qemu-desktop-iter5.log`
+      - `StratBoot: booting slot`
+      - `erofs: (device sda2): mounted ...`
+      - `system-init: seatd socket ready`
+      - `stratwm: started (wayland-0)`
+
+  Current compositor status:
+  - PASS: first-insert diagnostics/assertion added in compositor map path.
+  - FAIL (env-limited): compositor rebuild still blocked by missing `wlroots` pkg-config package in this environment.
+
+  Next narrow test:
+  - Rebuild `stratvm/stratwm` on a host with wlroots dev packages and run one desktop boot to confirm first-window insertion logs:
+    - `workspace=<id> root initialized ...`
+    - `first tiled view inserted at workspace root ...`
+---
+- 2026-04-14 (Codex, compositor priority execution): confirmed active task and attempted runtime reproduction.
+
+  Task confirmation from TALKING.md:
+  - Active top priority remains Wayland compositor BSP first-window insertion verification.
+  - EFI boot path is not the active fix target in this step.
+
+  Files touched this step:
+  1. `TALKING.md` (status/log update only)
+
+  What was verified (actual command outputs):
+  - Host wlroots availability check:
+    - `flatpak-spawn --host sh -lc 'pkg-config --exists wlroots || ...; echo WLROOTS_PKG_CHECK_EXIT:$?'`
+    - Output: `WLROOTS_PKG_CHECK_EXIT:1`
+  - Local compositor build attempt:
+    - `make -C stratvm`
+    - Output: `Makefile:13: *** wlroots pkg-config entry not found (wlroots / wlroots-0.19 / wlroots-0.18 / wlroots-0.17).  Stop.`
+  - Existing binary diagnostic marker check:
+    - `strings stratvm/stratwm | rg 'workspace=.*root initialized|first tiled view inserted|ERROR view not found in BSP tree after insert|invalid output geometry|tile_insert returned NULL'`
+    - Output: no matches (binary is older than latest `main.c` diagnostics).
+
+  Current pass/fail status:
+  - PASS: correct task selected (compositor BSP first-window path).
+  - FAIL (environment blocker): cannot yet validate first tiled client diagnostics at runtime because rebuilt `stratwm` is unavailable without wlroots dev package.
+
+  Next narrow concrete test:
+  - Build `stratvm/stratwm` in an environment with wlroots pkg-config entry, then boot once and capture stderr lines proving:
+    - root geometry creation,
+    - non-NULL `tile_insert()`,
+    - successful `tile_find_view(ws->root, view)`.
+---
+- 2026-04-14 (Codex, compositor unblock): mounted devpts for PTY-backed first client map.
+
+  Files touched:
+  1. `sysroot/system-init.c`
+     - Added `ensure_dir("/dev/pts")` during early init setup.
+     - Added `mount_best_effort("devpts", "/dev/pts", "devpts", 0, "mode=620,ptmxmode=666")` before launching stratwm.
+  2. `TALKING.md`
+     - Logged this change immediately per workflow.
+
+  Why:
+  - Runtime log showed `terminal.c:1192: failed to open PTY: No such file or directory` after `stratwm: autostart spawned /bin/foot`, preventing first tiled client map and BSP insertion diagnostics from firing.
+
+  Verified so far:
+  - Code patch applied in PID1 mount sequence before compositor launch.
+
+  Current pass/fail status:
+  - PASS: fix applied for missing `/dev/pts` mount.
+  - PENDING: boot validation needed to confirm foot can open PTY and trigger first-window BSP diagnostics.
+
+  Next narrow test:
+  - Rebuild/rootfs-slot sync, boot once, then verify these log markers:
+    - presence: `stratwm: autostart spawned /bin/foot ...`
+    - absence: `failed to open PTY`
+    - presence: `workspace=... root initialized ...` and `first tiled view inserted ...`
+---
+- 2026-04-14 (Codex, PTY follow-up): ensured `/dev/ptmx` exists for devpts-backed PTY open.
+
+  Files touched:
+  1. `sysroot/system-init.c`
+     - After mounting `devpts` on `/dev/pts`, added:
+       - `if (access("/dev/ptmx", F_OK) != 0) symlink("pts/ptmx", "/dev/ptmx")`
+
+  What was verified:
+  - Previous run showed autostart works (`stratwm: autostart spawned /bin/foot ...`) but foot still failed at PTY open with:
+    - `terminal.c:1192: failed to open PTY: No such file or directory`
+  - This fix targets missing `/dev/ptmx` path explicitly.
+
+  Current pass/fail status:
+  - PASS: code fix applied for `/dev/ptmx` availability.
+  - PENDING: runtime boot check for `failed to open PTY` disappearance and BSP first-window insertion logs.
+
+  Next narrow test:
+  - Rebuild artifacts + slot sync + desktop boot; verify:
+    - no `failed to open PTY`
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+---
+- 2026-04-14 (Codex, PTY mount-order fix): corrected `/dev/pts` setup ordering and forced `/dev/ptmx` symlink.
+
+  Files touched:
+  1. `sysroot/system-init.c`
+     - Moved `ensure_dir("/dev/pts")` to occur after mounting `devtmpfs` on `/dev`.
+     - Kept `devpts` mount at `/dev/pts`.
+     - Replaced conditional ptmx creation with deterministic sequence:
+       - if `/dev/ptmx` exists, unlink it
+       - create symlink `/dev/ptmx -> pts/ptmx`
+  2. `TALKING.md`
+     - Logged this change immediately.
+
+  Why:
+  - Runtime still showed `terminal.c:1192: failed to open PTY: No such file or directory` even after devpts mount attempt.
+  - Creating `/dev/pts` before mounting `/dev` can be hidden by later devtmpfs mount.
+
+  Current pass/fail status:
+  - PASS: code fix applied for mount ordering and ptmx path.
+  - PENDING: runtime validation required.
+
+  Next narrow test:
+  - Rebuild phase7 artifacts, sync slot, boot once, then confirm:
+    - no `failed to open PTY`
+    - BSP first-insert diagnostics appear.
+---
+- 2026-04-14 (Codex, PTY hardening): bound `/dev/pts/ptmx` to `/dev/ptmx` with runtime probes/logging.
+
+  Files touched:
+  1. `sysroot/system-init.c`
+     - Added `probe_file("/dev/pts/ptmx")` after `devpts` mount.
+     - Replaced best-effort ptmx symlink-only logic with:
+       - unlink existing `/dev/ptmx` (with error log on failure)
+       - `mount("/dev/pts/ptmx", "/dev/ptmx", NULL, MS_BIND, NULL)`
+       - fallback to `symlink("pts/ptmx", "/dev/ptmx")` if bind mount fails
+     - Added `probe_file("/dev/ptmx")` after setup.
+  2. `TALKING.md`
+     - Logged this update immediately.
+
+  Why:
+  - Runtime still reported `terminal.c:1192: failed to open PTY: No such file or directory` while autostart was confirmed.
+  - This indicates PTMX path wiring at runtime is still incomplete or not visible as expected.
+
+  Current pass/fail status:
+  - PASS: stronger PTMX setup logic landed.
+  - PENDING: one boot run required to confirm PTY opens and BSP first-window diagnostics appear.
+
+  Next narrow test:
+  - Rebuild phase7 artifacts + slot sync + desktop boot; verify absence of `failed to open PTY` and presence of BSP insertion diagnostics.
+---
+- 2026-04-14 (Codex, compositor env fix): set stable `PATH`/`SHELL` for autostart child in compositor.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - In `spawn_autostart()` child branch, before `execv(path, argv)`:
+       - `setenv("PATH", "/bin:/usr/bin:/sbin:/usr/sbin", 1)`
+       - `setenv("SHELL", "/bin/sh", 1)`
+  2. `TALKING.md`
+     - Logged this change immediately.
+
+  Why:
+  - Runtime log shows autostart process launches, but foot reports user lookup fallback and shell lookup problems.
+  - First tiled client does not map, so BSP first-insert diagnostics never trigger.
+
+  Current pass/fail status:
+  - PASS: compositor-side launch environment fix applied.
+  - PENDING: runtime verification for first mapped client + BSP diagnostics.
+
+  Next narrow test:
+  - Rebuild `stratvm`, restage/sync slot, boot once, and grep for:
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+    - absence of `failed to open PTY`.
+---
+- 2026-04-14 (Codex, compositor autostart diagnostic refinement): added locale-safe autostart env + early-exit logging in `main.c`.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - In `spawn_autostart()` child env setup, added:
+       - `LANG=C.UTF-8`
+       - `LC_ALL=C.UTF-8`
+     - In parent after spawn log, added a short delayed `waitpid(..., WNOHANG)` probe to detect immediate child exit and log:
+       - `stratwm: autostart exited early status=...`
+       - `stratwm: autostart died early signal=...`
+  2. `TALKING.md`
+     - Logged this update immediately.
+
+  Why:
+  - Runtime output showed autostart spawn succeeds and PTY error is gone, but no BSP map diagnostics appear.
+  - Log still reports locale warning (`'C' is not a UTF-8 locale`), indicating autostart app may be failing before mapping.
+
+  Current pass/fail status:
+  - PASS: compositor-side launch env hardened and failure visibility improved.
+  - PENDING: runtime confirmation that first client maps and BSP insertion diagnostics fire.
+
+  Next narrow test:
+  - Rebuild `stratwm`, restage to rootfs, rebuild slot, boot once, and grep for:
+    - `autostart exited early ...` (if present)
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+---
+- 2026-04-14 (Codex, compositor build fix): fixed compile break in recent autostart early-exit probe.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - Added `#include <sys/wait.h>` for `waitpid` declarations.
+     - Replaced `usleep(200 * 1000)` with POSIX-safe `nanosleep()` call to avoid implicit declaration under current `_POSIX_C_SOURCE` settings.
+  2. `TALKING.md`
+     - Logged this fix immediately.
+
+  Why:
+  - Rebuild in `stratos-dev` failed with:
+    - implicit declaration of `usleep`
+    - implicit declaration of `waitpid`
+
+  Status:
+  - PASS: source compile fix applied.
+  - PENDING: rebuild + restage + boot log verification.
+---
+- 2026-04-14 (Codex, rebuild/restage checkpoint): new compositor binary with latest diagnostics is now staged and synced to SLOT_A.
+
+  Files/outputs touched:
+  1. `stratvm/stratwm` (rebuilt inside `stratos-dev`)
+  2. `out/phase7/rootfs-minimal/bin/stratwm` (restaged from rebuilt binary)
+  3. `out/phase7/slot-system.erofs` (rebuilt)
+  4. `out/phase4/test-disk.img` SLOT_A (updated via `update-test-disk-slot-a.sh --no-esp-update`)
+
+  Verified:
+  - Build now succeeds after include/nanosleep fix.
+  - Staged binary contains latest markers:
+    - `autostart exited early status=...`
+    - `autostart died early signal=...`
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+
+  Current pass/fail status:
+  - PASS: staging/sync complete with correct binary content.
+  - PENDING: one fresh boot log run to confirm first mapped client and BSP insertion markers at runtime.
+---
+- 2026-04-14 (Codex, Wayland handshake visibility pass): added xdg_toplevel creation marker + HOME env for autostart child.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - In `spawn_autostart()` child env block: added `setenv("HOME", "/home", 1)`.
+     - At top of `server_new_xdg_toplevel_notify()`: added `fprintf(stderr, "stratwm: new xdg_toplevel created\n");`.
+  2. `TALKING.md`
+     - Logged immediately.
+
+  Why:
+  - Runtime showed autostart spawn without BSP insertion logs, so we lacked a hard signal at the Wayland toplevel creation boundary.
+  - HOME was unset for autostart child; this can destabilize app config/cache behavior.
+
+  Current pass/fail status:
+  - PASS: instrumentation + env patch landed.
+  - PENDING: rebuild/restage/boot validation for new xdg_toplevel marker and BSP insertion markers.
+
+  Next narrow test:
+  - Rebuild `stratwm` in `stratos-dev`, stage/sync slot, boot once, grep for:
+    - `stratwm: new xdg_toplevel created`
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+---
+- 2026-04-14 (Codex, post-patch staging): rebuilt compositor and resynced SLOT_A with new handshake diagnostics.
+
+  What was done:
+  1. Rebuilt `stratvm/stratwm` in `stratos-dev` (host lacks direct wlroots pkg-config wiring).
+  2. Staged rebuilt binary to `out/phase7/rootfs-minimal/bin/stratwm`.
+  3. Rebuilt `out/phase7/slot-system.erofs` and updated test disk `SLOT_A`.
+
+  Verified:
+  - Staged binary now contains:
+    - `stratwm: new xdg_toplevel created`
+    - `stratwm: autostart exited early status=...`
+    - `stratwm: workspace=... root initialized ...`
+    - `stratwm: first tiled view inserted ...`
+
+  Current pass/fail status:
+  - PASS: disk payload now includes latest compositor instrumentation.
+  - PENDING: one fresh boot log run to capture runtime path outcome.
+---
+- 2026-04-14 (Codex, targeted foot-map unblock): switched autostart locale to `C.utf8` and staged XKB data into rootfs.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - In `spawn_autostart()` child env:
+       - `LANG=C.utf8`
+       - `LC_ALL=C.utf8`
+       - `XKB_CONFIG_ROOT=/usr/share/X11/xkb`
+  2. `scripts/phase7/prepare-minimal-rootfs.sh`
+     - Added staging of `/usr/share/X11/xkb` with host fallback (`/run/host/usr/share/X11/xkb`).
+  3. `TALKING.md`
+     - Logged immediately.
+
+  Why:
+  - Runtime now reaches `stratwm: new xdg_toplevel created` but still lacks map/BSP insertion logs.
+  - Existing errors indicate invalid UTF-8 locale and missing XKB include path, both of which can prevent client map.
+
+  Current pass/fail status:
+  - PASS: fixes applied and logged.
+  - PENDING: rebuild/restage/boot validation for BSP first-map markers.
+
+  Next narrow test:
+  - rebuild `stratwm`, rebuild artifacts, sync SLOT_A, boot once, grep for:
+    - `new xdg_toplevel created`
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+    - absence of locale/XKB errors.
+---
+- 2026-04-14 (Codex, staging complete for locale+xkb fix): rebuilt artifacts and resynced SLOT_A.
+
+  Verified outputs:
+  - `stratvm` rebuilt successfully (warning-only enum comparison remains).
+  - `build-phase7-artifacts.sh --init-mode busybox` completed successfully.
+  - Rootfs staging now includes `usr/share/X11/xkb`.
+  - `update-test-disk-slot-a.sh --no-esp-update` updated test-disk partition 2.
+
+  Current pass/fail status:
+  - PASS: payload with latest compositor and XKB staging is now on disk.
+  - PENDING: fresh runtime validation log for BSP first-window insertion markers.
+
+  Next narrow test:
+  - Run desktop boot once and grep for:
+    - `new xdg_toplevel created`
+    - `workspace=... root initialized ...`
+    - `first tiled view inserted ...`
+    - absence of locale/XKB/PTTY blockers.
+---
+- 2026-04-14 (Codex, locale-data unblock): staged UTF-8 locale files and set LOCPATH for autostart child.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - In `spawn_autostart()` child env: added `setenv("LOCPATH", "/usr/lib/locale", 1)`.
+  2. `scripts/phase7/prepare-minimal-rootfs.sh`
+     - Added staging of `/usr/lib/locale/C.utf8` into rootfs with host fallback (`/run/host/usr/lib/locale/C.utf8`).
+  3. `TALKING.md`
+     - Logged immediately.
+
+  Why:
+  - Runtime still reports `setlocale() failed` and `invalid locale` even with `LANG/LC_ALL` configured.
+  - Rootfs previously lacked locale data directory, so UTF-8 locale lookup could not succeed.
+
+  Current pass/fail status:
+  - PASS: locale data + LOCPATH fixes applied.
+  - PENDING: rebuild/restage/boot validation for locale error disappearance and BSP map insertion markers.
+
+  Next narrow test:
+  - rebuild `stratwm` and phase7 artifacts, sync SLOT_A, boot once, grep for locale errors + BSP insertion markers.
+---
+- 2026-04-14 (Codex, map-edge diagnostic): added explicit map callback trace in compositor.
+
+  Files touched:
+  1. `stratvm/src/main.c`
+     - At top of `view_map_notify()`, added:
+       - `stratwm: view_map_notify fired (ws=%d, floating=%d)`
+  2. `TALKING.md`
+     - Logged immediately.
+
+  Why:
+  - Runtime currently shows `new xdg_toplevel created` but no BSP insert traces.
+  - Need to prove whether map callback fires at all before diagnosing insert path.
+
+  Current pass/fail status:
+  - PASS: diagnostic instrumentation added.
+  - PENDING: rebuild/restage/boot log check for map callback marker.
+
+  Next narrow test:
+  - Rebuild `stratwm`, stage/sync slot, boot once, grep for:
+    - `new xdg_toplevel created`
+    - `view_map_notify fired`
+    - BSP insertion markers.

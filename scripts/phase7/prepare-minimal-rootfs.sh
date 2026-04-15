@@ -67,8 +67,9 @@ mkdir -p "$ROOTFS_DIR/sbin" "$ROOTFS_DIR/bin" "$ROOTFS_DIR/usr/bin" \
          "$ROOTFS_DIR/lib64" "$ROOTFS_DIR/usr/lib64" \
          "$ROOTFS_DIR/lib/systemd/system" \
          "$ROOTFS_DIR/etc" "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev" \
-         "$ROOTFS_DIR/run" "$ROOTFS_DIR/var" "$ROOTFS_DIR/home" "$ROOTFS_DIR/config" \
+         "$ROOTFS_DIR/run" "$ROOTFS_DIR/tmp" "$ROOTFS_DIR/var" "$ROOTFS_DIR/home" "$ROOTFS_DIR/config" \
          "$ROOTFS_DIR/apps" "$ROOTFS_DIR/usr"
+mkdir -p "$ROOTFS_DIR/dev/shm"
 
 gcc -Os -static -s -Wall -Wextra -o "$ROOTFS_DIR/sbin/init" "$INIT_SOURCE"
 chmod 0755 "$ROOTFS_DIR/sbin/init"
@@ -362,6 +363,32 @@ elif [ -d "/run/host/usr/share/libinput" ]; then
     cp -a "/run/host/usr/share/libinput" "$ROOTFS_DIR/usr/share/"
 else
     echo "Warning: libinput data directory not found on local or host paths" >&2
+fi
+
+mkdir -p "$ROOTFS_DIR/usr/share/X11"
+if [ -d "/usr/share/X11/xkb" ]; then
+    cp -aL "/usr/share/X11/xkb" "$ROOTFS_DIR/usr/share/X11/"
+elif [ -d "/run/host/usr/share/X11/xkb" ]; then
+    cp -aL "/run/host/usr/share/X11/xkb" "$ROOTFS_DIR/usr/share/X11/"
+else
+    echo "Warning: xkb data directory not found on local or host paths" >&2
+fi
+
+if [ -d "/usr/share/X11/locale" ]; then
+    cp -a "/usr/share/X11/locale" "$ROOTFS_DIR/usr/share/X11/"
+elif [ -d "/run/host/usr/share/X11/locale" ]; then
+    cp -a "/run/host/usr/share/X11/locale" "$ROOTFS_DIR/usr/share/X11/"
+else
+    echo "Warning: X11 locale data directory not found on local or host paths" >&2
+fi
+
+mkdir -p "$ROOTFS_DIR/usr/lib/locale"
+if [ -d "/usr/lib/locale/C.utf8" ]; then
+    cp -a "/usr/lib/locale/C.utf8" "$ROOTFS_DIR/usr/lib/locale/"
+elif [ -d "/run/host/usr/lib/locale/C.utf8" ]; then
+    cp -a "/run/host/usr/lib/locale/C.utf8" "$ROOTFS_DIR/usr/lib/locale/"
+else
+    echo "Warning: C.utf8 locale directory not found on local or host paths" >&2
 fi
 
 if [ -x "$ROOTFS_DIR/bin/stratwm" ]; then

@@ -50,6 +50,7 @@ Build only the lightweight headless indexer runner:
 ```sh
 make -C stratterm run-indexer-once
 ```
+(`run-indexer-once` uses `--no-default-features`, so it works without GTK dev packages.)
 
 ## Run
 ```sh
@@ -60,6 +61,13 @@ Run the simple settings app:
 ```sh
 make -C stratterm run-settings
 ```
+
+Install into the Phase 7 rootfs bin dir:
+```sh
+make -C stratterm install-rootfs
+```
+- Always installs `stratterm-indexer`.
+- Installs GUI binaries (`stratterm`, `strat-settings`) only when `gtk4.pc` is available.
 
 ## Rootfs/boot integration
 - Boot-time background indexing is supported with a dedicated lightweight process: `stratterm-indexer`.

@@ -260,7 +260,10 @@ static void emergency_shell(void) {
 int main(void) {
     attach_console_stdio();
     log_status("start");
+    setenv("HOME", "/home", 1);
     setenv("XDG_RUNTIME_DIR", "/run", 1);
+    setenv("XDG_CACHE_HOME", "/var/cache", 1);
+    setenv("WAYLAND_DEBUG", "1", 1);
     unsetenv("LIBSEAT_BACKEND");
     unsetenv("SEATD_SOCK");
     setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
@@ -279,11 +282,37 @@ int main(void) {
     ensure_dir("/sys");
     ensure_dir("/dev");
     ensure_dir("/run");
+    ensure_dir("/tmp");
+    ensure_dir("/config");
+    ensure_dir("/apps");
+    ensure_dir("/home");
+    ensure_dir("/var");
 
     mount_best_effort("proc", "/proc", "proc", 0, NULL);
     mount_best_effort("sys", "/sys", "sysfs", 0, NULL);
     mount_best_effort("dev", "/dev", "devtmpfs", 0, NULL);
+    ensure_dir("/dev/shm");
+    ensure_dir("/dev/pts");
+    mount_best_effort("/dev/sda5", "/config", "ext4", 0, NULL);
+    mount_best_effort("/dev/sda6", "/apps", "ext4", 0, NULL);
+    mount_best_effort("/dev/sda7", "/home", "btrfs", 0, NULL);
+    ensure_dir("/config/var");
+    mount_best_effort("/config/var", "/var", NULL, MS_BIND, NULL);
+    mount_best_effort("devpts", "/dev/pts", "devpts", 0, "mode=620,ptmxmode=666");
     mount_best_effort("tmpfs", "/run", "tmpfs", 0, "mode=755");
+    mount_best_effort("tmpfs", "/tmp", "tmpfs", 0, "mode=1777");
+    mount_best_effort("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777");
+    probe_file("/dev/pts/ptmx");
+    if (access("/dev/ptmx", F_OK) == 0 && unlink("/dev/ptmx") < 0) {
+        fprintf(stderr, "system-init: unlink /dev/ptmx failed: %s\n", strerror(errno));
+    }
+    if (mount("/dev/pts/ptmx", "/dev/ptmx", NULL, MS_BIND, NULL) < 0) {
+        fprintf(stderr, "system-init: bind /dev/ptmx failed: %s, trying symlink\n", strerror(errno));
+        if (symlink("pts/ptmx", "/dev/ptmx") < 0) {
+            fprintf(stderr, "system-init: symlink /dev/ptmx -> pts/ptmx failed: %s\n", strerror(errno));
+        }
+    }
+    probe_file("/dev/ptmx");
 
     probe_file("/bin/seatd");
     spawn_seatd();
@@ -294,6 +323,9 @@ int main(void) {
     } else {
         log_status("seatd socket timeout, continuing anyway");
     }
+
+    ensure_dir("/var/cache");
+    ensure_dir("/var/cache/fontconfig");
 
     run_once_if_present("/bin/strat-validate-boot");
     run_once_if_present("/bin/strat-indexer-boot.sh");

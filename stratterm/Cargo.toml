@@ -3,10 +3,28 @@ name = "stratterm"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["gui"]
+gui = ["dep:gtk", "dep:vte4"]
+
 [dependencies]
-gtk = { package = "gtk4", version = "0.11" }
-vte4 = "0.10"
+gtk = { package = "gtk4", version = "0.11", optional = true }
+vte4 = { version = "0.10", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[[bin]]
+name = "stratterm"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "strat-settings"
+path = "src/bin/strat-settings.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "stratterm-indexer"
+path = "src/bin/stratterm-indexer.rs"
 
 [profile.release]
 opt-level = 2

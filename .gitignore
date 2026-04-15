@@ -45,3 +45,17 @@ stratterm/target/
 # Misc
 *.tmp
 .DS_Store
+
+# Virtual disk images (built from source)
+*.vhd
+*.qcow2
+*.vmdk
+
+# Rust Cargo.lock (rebuilt from Cargo.toml)
+stratterm/Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*~
