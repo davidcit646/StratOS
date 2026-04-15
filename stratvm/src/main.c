@@ -3,10 +3,12 @@
 #include <errno.h>
 #include <linux/input-event-codes.h>
 #include <spawn.h>
+#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -15,7 +17,6 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <wlr/backend.h>
-#include <wlr/backend/libinput.h>
 #include <wlr/backend/multi.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
@@ -62,6 +63,7 @@ struct stratwm_view {
     
     struct wl_listener map;
     struct wl_listener unmap;
+    struct wl_listener commit;
     struct wl_listener destroy;
 };
 
@@ -107,12 +109,33 @@ static void spawn_autostart(const char *path) {
     }
     if (pid == 0) {
         setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+        setenv("PATH", "/bin:/usr/bin:/sbin:/usr/sbin", 1);
+        setenv("SHELL", "/bin/sh", 1);
+        setenv("HOME", "/home", 1);
+        setenv("LANG", "C.utf8", 1);
+        setenv("LC_ALL", "C.utf8", 1);
+        setenv("LOCPATH", "/usr/lib/locale", 1);
+        setenv("XKB_CONFIG_ROOT", "/usr/share/X11/xkb", 1);
         char *const argv[] = {(char *)path, NULL};
         execv(path, argv);
         fprintf(stderr, "stratwm: autostart exec failed for %s: %s\n", path, strerror(errno));
         _exit(127);
     }
     fprintf(stderr, "stratwm: autostart spawned %s (pid=%ld)\n", path, (long)pid);
+    /* Surface fast-fail cases to logs when autostart exits before mapping. */
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 200 * 1000 * 1000};
+    (void)nanosleep(&delay, NULL);
+    int status = 0;
+    pid_t waited = waitpid(pid, &status, WNOHANG);
+    if (waited == pid) {
+        if (WIFEXITED(status)) {
+            fprintf(stderr, "stratwm: autostart exited early status=%d (pid=%ld)\n",
+                WEXITSTATUS(status), (long)pid);
+        } else if (WIFSIGNALED(status)) {
+            fprintf(stderr, "stratwm: autostart died early signal=%d (pid=%ld)\n",
+                WTERMSIG(status), (long)pid);
+        }
+    }
 }
 
 static struct stratwm_view *view_from_surface(struct stratwm_server *server,
@@ -713,8 +736,16 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_view *view = wl_container_of(listener, view, map);
     struct stratwm_server *server = view->server;
+    fprintf(stderr, "stratwm: view_map_notify fired (ws=%d, floating=%d)\n",
+        view->workspace_id, view->is_floating ? 1 : 0);
 
     wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+
+    /* Damage all outputs to force repaint of new window */
+    struct stratwm_output *output;
+    wl_list_for_each(output, &server->outputs, link) {
+        wlr_output_schedule_frame(output->wlr_output);
+    }
 
     /* Create window border decoration (Phase 8.3) */
     float border_color[4] = {0.267f, 0.267f, 0.267f, 1.0f};  /* default unfocused: dark gray */
@@ -729,6 +760,7 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
 
     /* Insert into tiling tree (Phase 8.2), unless floating (Phase 8.5) */
     struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+    bool first_tiled_in_workspace = (!ws->root || tile_leaf_count(ws->root) == 0);
     
     if (view->is_floating) {
         /* Floating window: render at fixed position, not in tree */
@@ -763,19 +795,62 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
                 output_box.height = output->wlr_output->height;
                 break;
             }
+            if (output_box.width <= 0 || output_box.height <= 0) {
+                fprintf(stderr,
+                    "stratwm: invalid output geometry (%dx%d), using fallback 1920x1080\n",
+                    output_box.width, output_box.height);
+                output_box.width = 1920;
+                output_box.height = 1080;
+            }
             ws->root = tile_new(output_box);
             if (!ws->root) {
+                fprintf(stderr, "stratwm: tile_new failed for workspace=%d\n", ws->id);
                 focus_view(view, view->xdg_toplevel->base->surface);
                 return;
             }
+            fprintf(stderr,
+                "stratwm: workspace=%d root initialized to %dx%d+%d+%d\n",
+                ws->id, output_box.width, output_box.height, output_box.x, output_box.y);
         }
 
         ws->root = tile_insert(ws->root, view, ws->root->geometry);
+        if (!ws->root) {
+            fprintf(stderr, "stratwm: tile_insert returned NULL for workspace=%d\n", ws->id);
+            focus_view(view, view->xdg_toplevel->base->surface);
+            return;
+        }
+        struct stratwm_tile *mapped_tile = tile_find_view(ws->root, view);
+        if (!mapped_tile) {
+            fprintf(stderr, "stratwm: ERROR view not found in BSP tree after insert (ws=%d)\n",
+                ws->id);
+        } else if (first_tiled_in_workspace) {
+            if (ws->root->view != view) {
+                fprintf(stderr,
+                    "stratwm: WARN first tiled view did not land on root leaf (ws=%d)\n",
+                    ws->id);
+            } else {
+                fprintf(stderr, "stratwm: first tiled view inserted at workspace root (ws=%d)\n",
+                    ws->id);
+            }
+        }
+        assert(mapped_tile != NULL);
         tile_reflow_scene(ws->root);
     }
 
     server->focused_view = view;
     focus_view(view, view->xdg_toplevel->base->surface);
+}
+
+static void view_commit_notify(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct stratwm_view *view = wl_container_of(listener, view, commit);
+
+    if (!view->xdg_toplevel->base->initial_commit) {
+        return;
+    }
+
+    uint32_t serial = wlr_xdg_toplevel_set_size(view->xdg_toplevel, 0, 0);
+    fprintf(stderr, "stratwm: initial configure queued after commit serial=%u\n", serial);
 }
 
 static void view_unmap_notify(struct wl_listener *listener, void *data) {
@@ -816,12 +891,14 @@ static void view_destroy_notify(struct wl_listener *listener, void *data) {
 
     wl_list_remove(&view->map.link);
     wl_list_remove(&view->unmap.link);
+    wl_list_remove(&view->commit.link);
     wl_list_remove(&view->destroy.link);
     wl_list_remove(&view->link);
     free(view);
 }
 
 static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *data) {
+    fprintf(stderr, "stratwm: new xdg_toplevel created\n");
     struct stratwm_server *server = wl_container_of(listener, server, new_xdg_toplevel);
     struct wlr_xdg_toplevel *xdg_toplevel = data;
 
@@ -848,6 +925,8 @@ static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *d
     wl_signal_add(&xdg_toplevel->base->surface->events.map, &view->map);
     view->unmap.notify = view_unmap_notify;
     wl_signal_add(&xdg_toplevel->base->surface->events.unmap, &view->unmap);
+    view->commit.notify = view_commit_notify;
+    wl_signal_add(&xdg_toplevel->base->surface->events.commit, &view->commit);
     view->destroy.notify = view_destroy_notify;
     wl_signal_add(&xdg_toplevel->events.destroy, &view->destroy);
 
