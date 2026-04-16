@@ -54,3 +54,31 @@ StratOS eliminates legacy symlinks (`/bin`, `/lib`, `/etc`). The root scaffold i
 └── var/        <-- [STATE]
     ├── log/     # Ephemeral logs
     └── run/     # Sockets and PIDs
+
+3. Key Differentiators
+
+**Triple-Buffer System (A/B/C)**
+While traditional atomic systems use A/B, StratOS uses three slots to allow for a Staging slot (new update), a Confirmed slot (current stable), and a Safe slot (immutable fallback) to exist simultaneously on disk.
+
+**No-Symlink Integrity**
+By removing the /bin, /lib, and /etc directories from the root, StratOS breaks compatibility with legacy path-dependent exploits and ensures that all software must respect the /usr hierarchy.
+
+**Opportunistic Maintenance**
+Updates do not interrupt the user. stratman identifies idle windows to:
+
+- Perform Library Consolidation (Pre-linking/Cache refreshes).
+- Run Integrity Checks (SHA256 verification of the "Truth").
+- Update EFI variables via stratmon to pivot slots on the next boot.
+
+If the user returns during a maintenance window, stratman immediately defers the task and reverts to a Read-Only state.
+
+**Stateless Configuration**
+The system contains no /etc. All system logic is derived from Partition D (/config). This ensures that the system is "Stateless"—if you swap the System Image (A to B), your configuration remains identical because it is sourced from a dedicated hardware-locked partition.
+
+4. Maintenance Tooling: StratMon
+
+stratmon is the primary interface for managing the system state from user-space.
+
+- **Slot Control**: stratmon --update-slot <slot_id> <status>
+- **Health Check**: stratmon --increment-boot (Updates the boot counter in EFI).
+- **Manual Sync**: Trigger maintenance tasks immediately if the user chooses not to defer.
