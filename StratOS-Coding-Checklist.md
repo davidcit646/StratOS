@@ -99,3 +99,19 @@
 - [ ] Implement system-wide theme/asset manager
 - [ ] Build the first-boot setup wizard (Custom UI)
 - [ ] Create the final unified build-and-deploy pipeline
+
+### Phase 21: Update System Hardening
+- [ ] Implement StratMon update conductor (Rust)
+- [ ] Build FIEMAP extent mapping logic
+- [ ] Create EFI variable writer for update requests
+
+### Phase 22: Slot Write Logic Surgeon
+- [ ] Implement EFI_BLOCK_IO_PROTOCOL raw copy in StratBoot
+- [ ] Build pre-boot hash verification engine
+- [ ] Implement slot activation logic via strat_slot_process_update_request
+
+### Phase 23: Cleanup & Hardening
+- [x] Target State Cleanup – APPROVED (deprecated legacy slot rotation, removed dead code paths)
+- [ ] Minimize EFI variable surface area
+- [ ] Introduce debug/build separation
+- [ ] Remove deprecated functions (strat_slot_rotate_to_b, strat_slot_raw_copy)

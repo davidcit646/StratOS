@@ -1,6 +1,6 @@
 # stratterm
 
-StratOS Phase 9 terminal MVP.
+StratOS Phase 9 terminal MVP (completed component within Phase 23 overall project).
 
 ## Features (MVP)
 - Modernized UI theme with layered surfaces, typography hierarchy, and styled prompt/action controls.

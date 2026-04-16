@@ -108,6 +108,8 @@ StratOS implements a "Custom First" approach to system reliability. We minimize 
 2. **Manifest Read**: Accesses the **Update manifest** from the ESP to find the source blocks in `STRAT_CACHE`.
 3. **The Raw Copy**: Uses `EFI_BLOCK_IO_PROTOCOL` to perform a raw copy from the source physical extents directly into the **Target slot** (the inactive, non-pinned slot).
 4. **Validation**: Calculates the hash of the bytes during the copy process; compares against the expected hash in the manifest.
-5. **Slot Rotation**: 
-   - If successful: Marks the **Target slot** as active.
-   - If failed: Leaves the **Current slot** untouched and
+5. **Slot Activation** (via `strat_slot_process_update_request`):
+   - If successful: Marks the **Target slot** as active, clears target state.
+   - If failed: Leaves the **Current slot** untouched, reports error.
+
+**Note:** Legacy functions `strat_slot_rotate_to_b` and `strat_slot_raw_copy` are deprecated and pending removal in Phase 23. All updates must use `strat_slot_process_update_request` as the sole valid update path.
