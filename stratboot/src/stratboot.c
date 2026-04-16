@@ -14,6 +14,7 @@
 
 static BOOLEAN show_confirm_prompt(StratGop *gop, StratInput *input);
 
+#ifdef DEBUG
 static void debugcon_log(const CHAR8 *msg) {
     if (msg == NULL) {
         return;
@@ -24,7 +25,9 @@ static void debugcon_log(const CHAR8 *msg) {
         msg++;
     }
 }
+#endif
 
+#ifdef DEBUG
 static void serial_log(EFI_SYSTEM_TABLE *st, const CHAR8 *msg) {
     if (st == NULL || st->BootServices == NULL || msg == NULL) {
         return;
@@ -48,6 +51,7 @@ static void serial_log(EFI_SYSTEM_TABLE *st, const CHAR8 *msg) {
 
     uefi_call_wrapper(serial->Write, 3, serial, &len, (VOID *)msg);
 }
+#endif
 
 static INT32 centered_text_x(StratGop *gop, const CHAR8 *text) {
     UINTN width = strat_gop_width(gop);
@@ -717,7 +721,7 @@ static EFI_STATUS start_kernel_efi(EFI_HANDLE image, EFI_SYSTEM_TABLE *st,
     CHAR16 cmdline[512];
     // Use SPrint from gnu-efi (efilib.h) to build the string:
     SPrint(cmdline, sizeof(cmdline),
-           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s console=ttyS0,115200 earlyprintk=serial,ttyS0,115200",
+           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s loglevel=0 console=none",
            root_device, initrd_path);
 
     EFI_LOADED_IMAGE *kernel_image = NULL;
@@ -767,36 +771,50 @@ static EFI_STATUS strat_maybe_init_vars(EFI_RUNTIME_SERVICES *rt) {
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
     InitializeLib(image, system_table);
+#ifdef DEBUG
     debugcon_log("StratBoot: efi_main entered\n");
     serial_log(system_table, "StratBoot: efi_main entered\n");
+#endif
 
     StratGop gop;
+#ifdef DEBUG
     debugcon_log("StratBoot: calling gop_init\n");
+#endif
     EFI_STATUS status = strat_gop_init(system_table, &gop);
     if (status != EFI_SUCCESS) {
+#ifdef DEBUG
         debugcon_log("StratBoot: GOP init failed\n");
         serial_log(system_table, "StratBoot: GOP init failed\n");
+#endif
         Print(L"StratBoot: GOP init failed: %r\n", status);
         return status;
     }
+#ifdef DEBUG
     debugcon_log("StratBoot: gop ok\n");
+#endif
 
     StratInput input;
     BOOLEAN input_ready = FALSE;
     if (strat_input_init(system_table, &input) == EFI_SUCCESS) {
         input_ready = TRUE;
     }
+#ifdef DEBUG
     debugcon_log("StratBoot: input ok\n");
+#endif
 
     // Initialize EFI vars on first boot. On a factory-fresh machine all vars
     // are absent; this writes the defaults so slot selection can proceed.
     status = strat_maybe_init_vars(system_table->RuntimeServices);
     if (status != EFI_SUCCESS) {
+#ifdef DEBUG
         debugcon_log("StratBoot: var init failed\n");
+#endif
         halt_with_message(system_table, &gop, "STRAT OS", "EFI var init failed");
         return EFI_ABORTED;
     }
+#ifdef DEBUG
     debugcon_log("StratBoot: vars ok\n");
+#endif
 
     for (INT32 i = 0; i < 3; i++) {
         slot_root_partuuid[i][0] = '\0';
@@ -809,7 +827,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         EFI_BLOCK_IO *bio = NULL;
         EFI_STATUS find_status = strat_find_partition_by_name(system_table, name, &bio);
         if (find_status != EFI_SUCCESS || bio == NULL) {
+#ifdef DEBUG
             debugcon_log("StratBoot: failed to find partition\n");
+#endif
             continue;
         }
 
@@ -817,7 +837,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         if (idx >= 0 && idx < 3) {
             EFI_STATUS uuid_status = strat_partition_get_partuuid(bio, slot_root_partuuid[idx], 37);
             if (uuid_status != EFI_SUCCESS) {
+#ifdef DEBUG
                 debugcon_log("StratBoot: failed to read PARTUUID\n");
+#endif
                 slot_root_partuuid[idx][0] = '\0';
             }
         }
@@ -833,7 +855,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
     }
 
     if (home_status == STRAT_HOME_STATUS_DEGRADED || home_status == STRAT_HOME_STATUS_CORRUPT) {
+#ifdef DEBUG
         debugcon_log("StratBoot: home corrupt path\n");
+#endif
         if (!input_ready) {
             halt_with_message(system_table, &gop, "STRAT OS", "Home corruption detected");
             return EFI_ABORTED;
@@ -845,9 +869,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         }
     }
 
+#ifdef DEBUG
     debugcon_log("StratBoot: drawing boot screen\n");
+#endif
     draw_boot_screen(&gop);
+#ifdef DEBUG
     debugcon_log("StratBoot: boot screen drawn, starting ESC poll\n");
+#endif
 
     // Poll for ESC for up to 3 seconds (3,000,000 microseconds in 100ms ticks)
     BOOLEAN esc_pressed = FALSE;
@@ -863,24 +891,34 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         }
     }
 
+#ifdef DEBUG
     debugcon_log("StratBoot: reading slot state\n");
+#endif
     StratSlotState slot_state;
     StratSlotDecision decision;
     status = strat_slot_read_state(system_table->RuntimeServices, &slot_state);
     if (status != EFI_SUCCESS) {
+#ifdef DEBUG
         debugcon_log("StratBoot: slot read failed\n");
+#endif
         halt_with_message(system_table, &gop, "STRAT OS", "EFI var read failed");
         return EFI_ABORTED;
     }
+#ifdef DEBUG
     debugcon_log("StratBoot: slot state ok, selecting\n");
+#endif
 
     status = strat_slot_select(&slot_state, &decision);
     if (status != EFI_SUCCESS) {
+#ifdef DEBUG
         debugcon_log("StratBoot: slot select failed\n");
+#endif
         halt_with_message(system_table, &gop, "STRAT OS", "Slot select failed");
         return EFI_ABORTED;
     }
+#ifdef DEBUG
     debugcon_log("StratBoot: slot selected\n");
+#endif
 
     if (esc_pressed && input_ready) {
         show_interrupt_menu(image, system_table, &gop, &input, &decision);
@@ -908,7 +946,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
     }
 
     if (decision.kind == STRAT_SLOT_DECISION_HALT) {
+#ifdef DEBUG
         debugcon_log("StratBoot: HALT - no bootable slot\n");
+#endif
         halt_with_message(system_table, &gop, "STRAT OS", "No bootable slot");
         return EFI_ABORTED;
     }
@@ -922,8 +962,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         return EFI_ABORTED;
     }
 
+#ifdef DEBUG
     debugcon_log("StratBoot: booting slot\n");
     serial_log(system_table, "StratBoot: booting slot\n");
+#endif
     Print(L"StratBoot: booting slot\n");
     draw_status(&gop, "STRAT OS", "Booting selected slot");
     status = start_kernel_efi(image, system_table, kpath, rootdev, initrd);

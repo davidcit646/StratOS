@@ -119,9 +119,13 @@ runtime_collect_deps() {
     verbose=0
     strict=0
     case "$bin_path" in
-        "$ROOTFS_DIR/bin/stratwm"|"$ROOTFS_DIR/bin/sh"|"$ROOTFS_DIR/bin/foot")
+        "$ROOTFS_DIR/bin/stratwm"|"$ROOTFS_DIR/bin/sh")
             verbose=1
             strict=1
+            ;;
+        "$ROOTFS_DIR/bin/foot")
+            verbose=1
+            strict=0
             ;;
     esac
 

@@ -105,7 +105,6 @@ static void log_status(const char *msg) {
     if (msg == NULL) {
         return;
     }
-    fprintf(stderr, "init: %s\n", msg);
     int kmsg = open("/dev/kmsg", O_WRONLY);
     if (kmsg >= 0) {
         dprintf(kmsg, "<0>init: %s\n", msg);

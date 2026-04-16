@@ -1,8 +1,14 @@
 use std::env;
-use std::io;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 use std::process;
 
+use sha2::{Digest, Sha256};
 use stratsup::efi_vars;
+
+mod manifest;
+mod fiemap;
 
 fn update_slot_status(slot_id: u8, new_status: u8) -> Result<(), io::Error> {
     if slot_id > 2 {
@@ -272,6 +278,53 @@ fn clear_pending_slot() -> Result<(), io::Error> {
     efi_vars::delete_u8(efi_vars::VAR_UPDATE_PENDING)
 }
 
+fn stage_update(image_path: &Path, target_slot: u8) -> Result<(), io::Error> {
+    if target_slot > 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "target_slot must be 0, 1, or 2 (A, B, C)",
+        ));
+    }
+
+    // Get file extents using FIEMAP
+    let extents = fiemap::get_file_extents(image_path)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to get file extents: {}", e)))?;
+
+    if extents.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "No extents found for image file",
+        ));
+    }
+
+    // Calculate SHA256 hash of the image
+    let mut file = File::open(image_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    
+    let hash_result = hasher.finalize();
+    let mut expected_hash = [0u8; 32];
+    expected_hash.copy_from_slice(&hash_result);
+
+    // Write manifest to /EFI/STRAT/UPDATE.MAN
+    let manifest_path = Path::new("/EFI/STRAT/UPDATE.MAN");
+    manifest::write_manifest(manifest_path, target_slot, expected_hash, &extents)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write manifest: {}", e)))?;
+
+    // Mark the target slot as pending
+    mark_staging_pending(target_slot)?;
+
+    Ok(())
+}
+
 fn print_usage() {
     println!("StratMon - StratOS System Monitor");
     println!();
@@ -291,6 +344,9 @@ fn print_usage() {
     println!("  --clear-pending                    Clear pending update target");
     println!("  --staging-slot                     Show staging slot for updates");
     println!("  --active-slot                      Show active slot (default)");
+    println!("  --stage-update <image-path> <target-slot>  Stage update for target slot");
+    println!("    image-path: Path to system image file");
+    println!("    target-slot: 0=A, 1=B, 2=C");
     println!("  --help                             Show this help");
 }
 
@@ -325,6 +381,7 @@ fn main() {
     let mut increment_boot = false;
     let mut set_active_arg: Option<u8> = None;
     let mut mark_pending_arg: Option<u8> = None;
+    let mut stage_update_arg: Option<(String, u8)> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -391,6 +448,24 @@ fn main() {
                 };
                 mark_pending_arg = Some(slot_id);
                 i += 2;
+            }
+            "--stage-update" => {
+                if i + 2 >= args.len() {
+                    eprintln!("Error: --stage-update requires <image-path> and <target-slot>");
+                    print_usage();
+                    process::exit(1);
+                }
+                let image_path = args[i + 1].clone();
+                let target_slot: u8 = match args[i + 2].parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        eprintln!("Error: target_slot must be a number (0, 1, or 2)");
+                        print_usage();
+                        process::exit(1);
+                    }
+                };
+                stage_update_arg = Some((image_path, target_slot));
+                i += 3;
             }
             "--show-pending" => {
                 match read_pending_slot() {
@@ -540,5 +615,20 @@ fn main() {
             process::exit(1);
         }
         println!("Boot count incremented");
+    }
+
+    if let Some((image_path, target_slot)) = stage_update_arg {
+        let path = Path::new(&image_path);
+        if let Err(e) = stage_update(path, target_slot) {
+            eprintln!("Error staging update: {}", e);
+            process::exit(1);
+        }
+        let slot_name = match target_slot {
+            0 => "A",
+            1 => "B",
+            2 => "C",
+            _ => "unknown",
+        };
+        println!("Update staged for slot {} from {}", slot_name, image_path);
     }
 }

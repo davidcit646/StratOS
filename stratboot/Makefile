@@ -2,6 +2,7 @@ ARCH            ?= x86_64
 CC              ?= $(firstword $(wildcard /run/host/usr/bin/x86_64-linux-gnu-gcc) x86_64-linux-gnu-gcc)
 LD              ?= $(firstword $(wildcard /run/host/usr/bin/x86_64-linux-gnu-ld) x86_64-linux-gnu-ld)
 OBJCOPY         ?= $(firstword $(wildcard /run/host/usr/bin/x86_64-linux-gnu-objcopy) x86_64-linux-gnu-objcopy)
+DEBUG           ?= 0
 
 GNUEFI_INCLUDE  ?= $(firstword $(wildcard /run/host/usr/include/efi /usr/include/efi))
 GNUEFI_LIBDIR   ?= $(shell \
@@ -19,6 +20,9 @@ CFLAGS  = -I$(GNUEFI_INCLUDE) -I$(GNUEFI_INCLUDE)/x86_64 \
           -fpic -fshort-wchar -mno-red-zone -maccumulate-outgoing-args \
           -fno-stack-protector \
           -DEFI_FUNCTION_WRAPPER -Wall -Wextra
+ifeq ($(DEBUG),1)
+    CFLAGS += -DDEBUG
+endif
 
 LDFLAGS = -nostdlib -znocombreloc -T $(GNUEFI_LDS) \
           -shared -Bsymbolic \
@@ -31,6 +35,9 @@ SRCS = efi/strat_efi_vars.c src/gop.c src/font.c \
 OBJS = $(SRCS:.c=.o)
 
 all: check BOOTX64.EFI
+
+debug: DEBUG=1
+debug: check BOOTX64.EFI
 
 check:
 	@if [ -z "$(GNUEFI_LDS)" ]; then echo "Missing elf_x86_64_efi.lds"; exit 1; fi
