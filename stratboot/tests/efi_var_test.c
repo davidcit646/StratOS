@@ -8,8 +8,6 @@ static const UINT8 kSlotCStatus = 0;
 static const UINT8 kActiveSlot = 1;
 static const UINT8 kPinnedSlot = 2;
 static const UINT8 kResetFlags = 0x0F;
-static const UINT8 kBootCount = 7;
-static const UINT8 kLastGoodSlot = 0;
 static const UINT8 kHomeStatus = 1;
 
 static UINTN wide_strlen(const CHAR16 *s) {
@@ -80,10 +78,6 @@ static EFI_STATUS set_all_vars(EFI_RUNTIME_SERVICES *rt) {
     if (status != EFI_SUCCESS) return status;
     status = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_RESET_FLAGS, kResetFlags, STRAT_EFI_VAR_ATTRS);
     if (status != EFI_SUCCESS) return status;
-    status = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_BOOT_COUNT, kBootCount, STRAT_EFI_VAR_ATTRS);
-    if (status != EFI_SUCCESS) return status;
-    status = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_LAST_GOOD_SLOT, kLastGoodSlot, STRAT_EFI_VAR_ATTRS);
-    if (status != EFI_SUCCESS) return status;
     status = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_HOME_STATUS, kHomeStatus, STRAT_EFI_VAR_ATTRS);
     if (status != EFI_SUCCESS) return status;
 
@@ -122,10 +116,6 @@ static EFI_STATUS check_all_vars(EFI_RUNTIME_SERVICES *rt) {
     status = read_and_check(rt, STRAT_EFI_VAR_NAME_PINNED_SLOT, kPinnedSlot);
     if (status != EFI_SUCCESS) return status;
     status = read_and_check(rt, STRAT_EFI_VAR_NAME_RESET_FLAGS, kResetFlags);
-    if (status != EFI_SUCCESS) return status;
-    status = read_and_check(rt, STRAT_EFI_VAR_NAME_BOOT_COUNT, kBootCount);
-    if (status != EFI_SUCCESS) return status;
-    status = read_and_check(rt, STRAT_EFI_VAR_NAME_LAST_GOOD_SLOT, kLastGoodSlot);
     if (status != EFI_SUCCESS) return status;
     status = read_and_check(rt, STRAT_EFI_VAR_NAME_HOME_STATUS, kHomeStatus);
     if (status != EFI_SUCCESS) return status;

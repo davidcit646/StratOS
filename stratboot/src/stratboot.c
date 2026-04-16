@@ -11,8 +11,6 @@
 #define STRAT_HOME_STATUS_HEALTHY  0
 #define STRAT_HOME_STATUS_DEGRADED 1
 #define STRAT_HOME_STATUS_CORRUPT  2
-static const CHAR16 STRAT_SMOKE_BOOTING_SLOT_VAR[] = L"STRAT_SMOKE_BOOTING_SLOT";
-static const CHAR16 STRAT_SMOKE_EFI_MAIN_VAR[] = L"STRAT_SMOKE_EFI_MAIN";
 
 static BOOLEAN show_confirm_prompt(StratGop *gop, StratInput *input);
 
@@ -763,17 +761,12 @@ static EFI_STATUS strat_maybe_init_vars(EFI_RUNTIME_SERVICES *rt) {
     if (s != EFI_SUCCESS) return s;
     s = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_RESET_FLAGS,    0, STRAT_EFI_VAR_ATTRS);
     if (s != EFI_SUCCESS) return s;
-    s = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_BOOT_COUNT,     0, STRAT_EFI_VAR_ATTRS);
-    if (s != EFI_SUCCESS) return s;
-    s = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_LAST_GOOD_SLOT, 0, STRAT_EFI_VAR_ATTRS); // SLOT_A
-    if (s != EFI_SUCCESS) return s;
 
     return EFI_SUCCESS;
 }
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
     InitializeLib(image, system_table);
-    strat_efi_set_u8(system_table->RuntimeServices, (CHAR16 *)STRAT_SMOKE_EFI_MAIN_VAR, 1, STRAT_EFI_VAR_ATTRS);
     debugcon_log("StratBoot: efi_main entered\n");
     serial_log(system_table, "StratBoot: efi_main entered\n");
 
@@ -929,16 +922,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         return EFI_ABORTED;
     }
 
-    UINT8 boot_count = 0;
-    strat_efi_get_u8(system_table->RuntimeServices, STRAT_EFI_VAR_NAME_BOOT_COUNT, &boot_count);
-    if (boot_count < 255) {
-        boot_count++;
-        strat_efi_set_u8(system_table->RuntimeServices, STRAT_EFI_VAR_NAME_BOOT_COUNT,
-                         boot_count, STRAT_EFI_VAR_ATTRS);
-    }
-
     debugcon_log("StratBoot: booting slot\n");
-    strat_efi_set_u8(system_table->RuntimeServices, (CHAR16 *)STRAT_SMOKE_BOOTING_SLOT_VAR, 1, STRAT_EFI_VAR_ATTRS);
     serial_log(system_table, "StratBoot: booting slot\n");
     Print(L"StratBoot: booting slot\n");
     draw_status(&gop, "STRAT OS", "Booting selected slot");

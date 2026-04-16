@@ -156,5 +156,3 @@ StratOS implements a "Custom First" approach to system reliability. We minimize 
 5. **Slot Activation** (via `strat_slot_process_update_request`):
    - If successful: Marks the **Target slot** as active, clears target state.
    - If failed: Leaves the **Current slot** untouched, reports error.
-
-**Note:** Legacy functions `strat_slot_rotate_to_b` and `strat_slot_raw_copy` are deprecated and pending removal in Phase 23. All updates must use `strat_slot_process_update_request` as the sole valid update path.

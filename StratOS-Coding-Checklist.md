@@ -114,4 +114,3 @@
 - [x] Target State Cleanup – APPROVED (deprecated legacy slot rotation, removed dead code paths)
 - [ ] Minimize EFI variable surface area
 - [ ] Introduce debug/build separation
-- [ ] Remove deprecated functions (strat_slot_rotate_to_b, strat_slot_raw_copy)

@@ -109,40 +109,6 @@ static const CHAR16 *slot_name_from_id(StratSlotId slot) {
     }
 }
 
-EFI_STATUS strat_slot_raw_copy(EFI_SYSTEM_TABLE *st, StratSlotId src_slot, StratSlotId dst_slot) {
-    if (st == NULL || st->BootServices == NULL) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    if (src_slot != STRAT_SLOT_A && src_slot != STRAT_SLOT_B && src_slot != STRAT_SLOT_C) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    if (dst_slot != STRAT_SLOT_A && dst_slot != STRAT_SLOT_B && dst_slot != STRAT_SLOT_C) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    const CHAR16 *src_name = slot_name_from_id(src_slot);
-    const CHAR16 *dst_name = slot_name_from_id(dst_slot);
-    if (src_name == NULL || dst_name == NULL) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    EFI_BLOCK_IO *src_bio = NULL;
-    EFI_STATUS status = strat_find_partition_by_name(st, src_name, &src_bio);
-    if (status != EFI_SUCCESS || src_bio == NULL) {
-        return (status != EFI_SUCCESS) ? status : EFI_NOT_FOUND;
-    }
-
-    EFI_BLOCK_IO *dst_bio = NULL;
-    status = strat_find_partition_by_name(st, dst_name, &dst_bio);
-    if (status != EFI_SUCCESS || dst_bio == NULL) {
-        return (status != EFI_SUCCESS) ? status : EFI_NOT_FOUND;
-    }
-
-    return strat_partition_copy(src_bio, dst_bio);
-}
-
 EFI_STATUS strat_slot_check_update_pending(EFI_RUNTIME_SERVICES *rt) {
     if (rt == NULL) {
         return EFI_INVALID_PARAMETER;
@@ -156,44 +122,6 @@ EFI_STATUS strat_slot_check_update_pending(EFI_RUNTIME_SERVICES *rt) {
 
     if (value == 0) {
         return EFI_NOT_FOUND;
-    }
-
-    return EFI_SUCCESS;
-}
-
-EFI_STATUS strat_slot_rotate_to_b(EFI_SYSTEM_TABLE *st, EFI_RUNTIME_SERVICES *rt, const UINT8 *slot_b_hash) {
-    if (st == NULL || st->BootServices == NULL || rt == NULL || slot_b_hash == NULL) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    EFI_STATUS status = strat_slot_check_update_pending(rt);
-    if (status != EFI_SUCCESS) {
-        return EFI_NOT_READY;
-    }
-
-    status = strat_slot_verify_hash(st, STRAT_SLOT_B, slot_b_hash);
-    if (status != EFI_SUCCESS) {
-        return status;
-    }
-
-    status = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_ACTIVE_SLOT, STRAT_SLOT_B, STRAT_EFI_VAR_ATTRS);
-    if (status != EFI_SUCCESS) {
-        return status;
-    }
-
-    status = strat_slot_set_update_status(rt, 1);
-    if (status != EFI_SUCCESS) {
-        return status;
-    }
-
-    status = strat_slot_append_update_history(rt, 1);
-    if (status != EFI_SUCCESS) {
-        return status;
-    }
-
-    status = strat_slot_clear_boot_success(rt);
-    if (status != EFI_SUCCESS) {
-        return status;
     }
 
     return EFI_SUCCESS;

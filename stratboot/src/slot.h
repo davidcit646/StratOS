@@ -41,9 +41,7 @@ typedef struct {
 
 EFI_STATUS strat_slot_read_state(EFI_RUNTIME_SERVICES *rt, StratSlotState *out);
 EFI_STATUS strat_slot_select(const StratSlotState *state, StratSlotDecision *out);
-EFI_STATUS strat_slot_raw_copy(EFI_SYSTEM_TABLE *st, StratSlotId src_slot, StratSlotId dst_slot);
 EFI_STATUS strat_slot_check_update_pending(EFI_RUNTIME_SERVICES *rt);
-EFI_STATUS strat_slot_rotate_to_b(EFI_SYSTEM_TABLE *st, EFI_RUNTIME_SERVICES *rt, const UINT8 *slot_b_hash);
 EFI_STATUS strat_slot_clear_boot_success(EFI_RUNTIME_SERVICES *rt);
 EFI_STATUS strat_slot_increment_boot_attempts(EFI_RUNTIME_SERVICES *rt);
 EFI_STATUS strat_slot_reset_boot_attempts(EFI_RUNTIME_SERVICES *rt);
