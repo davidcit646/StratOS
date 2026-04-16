@@ -6,6 +6,7 @@
 #include "input.h"
 #include "slot.h"
 #include "reset.h"
+#include "partition.h"
 
 #define STRAT_HOME_STATUS_HEALTHY  0
 #define STRAT_HOME_STATUS_DEGRADED 1
@@ -645,11 +646,22 @@ static const CHAR16 *slot_kernel_path(StratSlotId slot) {
     }
 }
 
+static const CHAR16 *slot_name(StratSlotId slot) {
+    switch (slot) {
+        case STRAT_SLOT_A: return L"SLOT_A";
+        case STRAT_SLOT_B: return L"SLOT_B";
+        case STRAT_SLOT_C: return L"SLOT_C";
+        default:           return NULL;
+    }
+}
+
+static CHAR16 slot_root_partuuid[3][37];
+
 static const CHAR16 *slot_root_device(StratSlotId slot) {
     switch (slot) {
-        case STRAT_SLOT_A: return L"/dev/sda2";
-        case STRAT_SLOT_B: return L"/dev/sda3";
-        case STRAT_SLOT_C: return L"/dev/sda4";
+        case STRAT_SLOT_A: return slot_root_partuuid[0];
+        case STRAT_SLOT_B: return slot_root_partuuid[1];
+        case STRAT_SLOT_C: return slot_root_partuuid[2];
         default:           return NULL;
     }
 }
@@ -703,11 +715,11 @@ static EFI_STATUS start_kernel_efi(EFI_HANDLE image, EFI_SYSTEM_TABLE *st,
 
     // Build cmdline with explicit console targets for VM visibility.
     // Use a fixed-size CHAR16 buffer (512 chars is enough)
-    // NOTE: keep verbose logging during bring-up.
+    // Official StratOS kernel command line contract
     CHAR16 cmdline[512];
     // Use SPrint from gnu-efi (efilib.h) to build the string:
     SPrint(cmdline, sizeof(cmdline),
-           L"root=%s rootfstype=erofs ro initrd=%s console=tty0 console=ttyS0,115200 loglevel=7",
+           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s console=ttyS0,115200 earlyprintk=serial,ttyS0,115200",
            root_device, initrd_path);
 
     EFI_LOADED_IMAGE *kernel_image = NULL;
@@ -792,6 +804,31 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         return EFI_ABORTED;
     }
     debugcon_log("StratBoot: vars ok\n");
+
+    for (INT32 i = 0; i < 3; i++) {
+        slot_root_partuuid[i][0] = '\0';
+    }
+
+    for (StratSlotId slot = STRAT_SLOT_A; slot <= STRAT_SLOT_C; slot = (StratSlotId)(slot + 1)) {
+        const CHAR16 *name = slot_name(slot);
+        if (name == NULL) continue;
+
+        EFI_BLOCK_IO *bio = NULL;
+        EFI_STATUS find_status = strat_find_partition_by_name(system_table, name, &bio);
+        if (find_status != EFI_SUCCESS || bio == NULL) {
+            debugcon_log("StratBoot: failed to find partition\n");
+            continue;
+        }
+
+        INT32 idx = (INT32)slot - (INT32)STRAT_SLOT_A;
+        if (idx >= 0 && idx < 3) {
+            EFI_STATUS uuid_status = strat_partition_get_partuuid(bio, slot_root_partuuid[idx], 37);
+            if (uuid_status != EFI_SUCCESS) {
+                debugcon_log("StratBoot: failed to read PARTUUID\n");
+                slot_root_partuuid[idx][0] = '\0';
+            }
+        }
+    }
 
     UINT8 home_status = STRAT_HOME_STATUS_HEALTHY;
     status = strat_efi_get_u8(system_table->RuntimeServices, STRAT_EFI_VAR_NAME_HOME_STATUS, &home_status);

@@ -7,6 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/boot/efi/strat/stratsup
+ExecStartPost=/usr/bin/stratsup set-boot-success
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

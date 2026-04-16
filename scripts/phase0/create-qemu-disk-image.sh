@@ -2,9 +2,8 @@
 set -eu
 
 IMAGE_PATH="${IMAGE_PATH:-out/stratos-disk.raw}"
-SIZE_GB="${SIZE_GB:-256}"
+SIZE_GB="${SIZE_GB:-20}"
 FORCE=0
-POC=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -16,17 +15,13 @@ while [ "$#" -gt 0 ]; do
             SIZE_GB="$2"
             shift 2
             ;;
-        --poc)
-            POC=1
-            shift
-            ;;
         --force)
             FORCE=1
             shift
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 [--image PATH] [--size-gb N] [--poc] [--force]" >&2
+            echo "Usage: $0 [--image PATH] [--size-gb N] [--force]" >&2
             exit 1
             ;;
     esac
@@ -74,32 +69,18 @@ fi
 echo "Creating raw disk image: $IMAGE_PATH (${SIZE_GB}G)"
 run_cmd qemu-img create -f raw "$IMAGE_PATH" "${SIZE_GB}G"
 
-if [ "$POC" -eq 1 ]; then
-    echo "Applying StratOS GPT partition layout (POC sizes, not spec-compliant)..."
-else
-    echo "Applying StratOS GPT partition layout..."
-fi
+echo "Applying StratOS GPT partition layout..."
 run_cmd sgdisk --zap-all "$IMAGE_PATH"
 run_cmd sgdisk -o "$IMAGE_PATH"
 run_cmd sgdisk -n 1:1MiB:+512MiB -t 1:EF00 -c 1:ESP "$IMAGE_PATH"
-if [ "$POC" -eq 1 ]; then
-    run_cmd sgdisk -n 2:0:+512MiB -t 2:8300 -c 2:SLOT_A "$IMAGE_PATH"
-    run_cmd sgdisk -n 3:0:+512MiB -t 3:8300 -c 3:SLOT_B "$IMAGE_PATH"
-    run_cmd sgdisk -n 4:0:+512MiB -t 4:8300 -c 4:SLOT_C "$IMAGE_PATH"
-    run_cmd sgdisk -n 5:0:+512MiB -t 5:8300 -c 5:CONFIG "$IMAGE_PATH"
-    run_cmd sgdisk -n 6:0:+1GiB -t 6:8300 -c 6:STRAT_CACHE "$IMAGE_PATH"
-    run_cmd sgdisk -n 7:0:+1GiB -t 7:8300 -c 7:HOME "$IMAGE_PATH"
-else
-    run_cmd sgdisk -n 2:0:+20GiB -t 2:8300 -c 2:SLOT_A "$IMAGE_PATH"
-    run_cmd sgdisk -n 3:0:+20GiB -t 3:8300 -c 3:SLOT_B "$IMAGE_PATH"
-    run_cmd sgdisk -n 4:0:+20GiB -t 4:8300 -c 4:SLOT_C "$IMAGE_PATH"
-    run_cmd sgdisk -n 5:0:+4GiB -t 5:8300 -c 5:CONFIG "$IMAGE_PATH"
-    run_cmd sgdisk -n 6:0:+50GiB -t 6:8300 -c 6:STRAT_CACHE "$IMAGE_PATH"
-    run_cmd sgdisk -n 7:0:0 -t 7:8300 -c 7:HOME "$IMAGE_PATH"
-fi
+run_cmd sgdisk -n 2:0:+20GiB -t 2:8300 -c 2:SLOT_A "$IMAGE_PATH"
+run_cmd sgdisk -n 3:0:+20GiB -t 3:8300 -c 3:SLOT_B "$IMAGE_PATH"
+run_cmd sgdisk -n 4:0:+20GiB -t 4:8300 -c 4:SLOT_C "$IMAGE_PATH"
+run_cmd sgdisk -n 5:0:+4GiB -t 5:8300 -c 5:CONFIG "$IMAGE_PATH"
+run_cmd sgdisk -n 6:0:0 -t 6:8300 -c 6:HOME "$IMAGE_PATH"
 
-echo "Note: this script only creates the GPT layout."
-echo "Filesystem formatting and mount validation are handled in Phase 1."
+echo "Phase 1 disk image creation complete."
+echo "GPT partition layout created with sgdisk."
 
 echo "Partition table:"
 run_cmd sgdisk -p "$IMAGE_PATH"

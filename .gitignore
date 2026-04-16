@@ -59,3 +59,30 @@ stratterm/Cargo.lock
 .idea/
 *.swp
 *~
+
+# Log files
+*.log
+logs/
+
+# Environment files
+.env
+.env.*
+.env.local
+
+# OS-specific
+Thumbs.db
+Desktop.ini
+
+# Cache directories
+cache/
+.cache/
+
+# Test coverage
+coverage/
+*.profraw
+*.profdata
+*.lcov
+
+# Temporary directories
+tmp/
+temp/

@@ -270,3 +270,72 @@ EFI_STATUS strat_partition_copy(EFI_BLOCK_IO *src_bio, EFI_BLOCK_IO *dst_bio) {
     FreePool(buffer);
     return status;
 }
+
+EFI_STATUS strat_partition_get_partuuid(
+    EFI_BLOCK_IO *bio,
+    CHAR16 *out_partuuid,
+    UINTN out_size
+) {
+    if (bio == NULL || bio->Media == NULL || out_partuuid == NULL || out_size < 37) {
+        return EFI_INVALID_PARAMETER;
+    }
+    if (!bio->Media->MediaPresent) {
+        return EFI_NO_MEDIA;
+    }
+    if (bio->Media->BlockSize == 0) {
+        return EFI_BAD_BUFFER_SIZE;
+    }
+
+    UINT64 block_size = bio->Media->BlockSize;
+    
+    UINT8 *gpt_header = AllocatePool(block_size);
+    if (gpt_header == NULL) {
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    EFI_STATUS status = uefi_call_wrapper(bio->ReadBlocks, 5, bio, bio->Media->MediaId, 1, block_size, gpt_header);
+    if (status != EFI_SUCCESS) {
+        FreePool(gpt_header);
+        return status;
+    }
+
+    UINT8 *signature = gpt_header;
+    if (signature[0] != 'P' || signature[1] != 'A' || signature[2] != 'R' || signature[3] != 'T') {
+        FreePool(gpt_header);
+        return EFI_NOT_FOUND;
+    }
+
+    UINT32 part_entry_lba = *(UINT32 *)(gpt_header + 72);
+    UINT32 num_part_entries = *(UINT32 *)(gpt_header + 80);
+    UINT32 part_entry_size = *(UINT32 *)(gpt_header + 84);
+    FreePool(gpt_header);
+
+    if (part_entry_lba == 0 || num_part_entries == 0 || part_entry_size < 128) {
+        return EFI_NOT_FOUND;
+    }
+
+    UINT8 *part_entry = AllocatePool(part_entry_size);
+    if (part_entry == NULL) {
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    status = uefi_call_wrapper(bio->ReadBlocks, 5, bio, bio->Media->MediaId, part_entry_lba, part_entry_size, part_entry);
+    if (status != EFI_SUCCESS) {
+        FreePool(part_entry);
+        return status;
+    }
+
+    EFI_GUID *part_guid = (EFI_GUID *)(part_entry + 56);
+    SPrint(out_partuuid, out_size,
+           L"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+           part_guid->Data1,
+           part_guid->Data2,
+           part_guid->Data3,
+           part_guid->Data4[0], part_guid->Data4[1],
+           part_guid->Data4[2], part_guid->Data4[3],
+           part_guid->Data4[4], part_guid->Data4[5],
+           part_guid->Data4[6], part_guid->Data4[7]);
+
+    FreePool(part_entry);
+    return EFI_SUCCESS;
+}

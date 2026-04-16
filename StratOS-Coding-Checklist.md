@@ -6,9 +6,9 @@
 - [ ] Create initial disk image layout utility (Partitioning A/B/C slots)
 
 ### Phase 2: StratBoot (Low-Level)
-- [ ] Implement basic UEFI entry point in C
-- [ ] Build EFI variable reader for slot selection
-- [ ] Create minimalist GDT/IDT setup for handoff
+- [x] Implement basic UEFI entry point in C
+- [x] Build EFI variable reader for slot selection
+- [x] Implement EFI variable read/write for slot selection
 
 ### Phase 3: Kernel Tuning & Handoff
 - [ ] Define minimal Kconfig for StratOS kernel
