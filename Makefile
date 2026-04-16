@@ -1,23 +1,44 @@
 # StratOS Phase 1 Build System
-PHASE0_SCRIPTS=scripts/phase0
+PHASE1_SCRIPTS=scripts/phase1
 OUT_DIR=out
 DISK_IMAGE=$(OUT_DIR)/stratos-disk.raw
+SYSTEM_IMAGE=$(OUT_DIR)/stratos-system.erofs
 
-.PHONY: toolchain disk-image clean
+.PHONY: toolchain verify-toolchain system-image disk-image phase1 clean
+.PHONY: verify-erofs-tooling verify-disk-layout-prereqs
 .PHONY: install-supervisor stratterm strat-settings initramfs
 
 # Phase 1: Toolchain & Build System
 toolchain:
-	@echo "Installing Rust UEFI target..."
-	@$(PHASE0_SCRIPTS)/install-toolchain.sh
-	@echo "Installing GNU-EFI libraries..."
-	@$(PHASE0_SCRIPTS)/install-gnu-efi.sh
+	@echo "=== Phase 1: Toolchain Setup ==="
+	@$(PHASE1_SCRIPTS)/setup-toolchain.sh
 	@echo "Phase 1 toolchain installation complete."
 
+verify-toolchain:
+	@echo "=== Phase 1: Toolchain Verification ==="
+	@$(PHASE1_SCRIPTS)/verify-toolchain.sh
+
+verify-erofs-tooling:
+	@echo "=== Phase 1: EROFS Tooling Verification ==="
+	@$(PHASE1_SCRIPTS)/verify-erofs-tooling.sh
+
+verify-disk-layout-prereqs:
+	@echo "=== Phase 1: Disk Layout Prerequisites Verification ==="
+	@$(PHASE1_SCRIPTS)/verify-disk-layout-prereqs.sh
+
+system-image:
+	@echo "=== Phase 1: System Image Build ==="
+	@$(PHASE1_SCRIPTS)/build-system-image.sh
+
 disk-image:
-	@echo "Creating QEMU disk image with GPT partition layout..."
-	@$(PHASE0_SCRIPTS)/create-qemu-disk-image.sh --image $(DISK_IMAGE) --size-gb 20
-	@echo "Phase 1 disk image complete."
+	@echo "=== Phase 1: Disk Image Layout ==="
+	@$(PHASE1_SCRIPTS)/create-disk-image.sh --image $(DISK_IMAGE) --size-gb 20
+
+phase1: toolchain system-image disk-image
+	@echo "=== Phase 1 Complete ==="
+	@echo "Artifacts:"
+	@echo "  System image: $(SYSTEM_IMAGE)"
+	@echo "  Disk image: $(DISK_IMAGE)"
 
 clean:
 	@echo "Removing out/ directory..."

@@ -52,12 +52,57 @@ The project is currently structured into approximately 20 phases of development.
 
 The primary development target for StratOS is **QEMU** to ensure rapid iteration and safety during low-level development.
 
+### Phase 1: Toolchain & Build System
+
+Phase 1 sets up the toolchain and creates the foundational build artifacts (system image and disk layout).
+
+**Required host tools:**
+- `rustup` (Rust toolchain installer)
+- `cargo` (Rust package manager)
+- `mkfs.erofs` (from erofs-utils package)
+- `qemu-img` (QEMU disk image utility)
+- `sgdisk` (GPT partitioning tool)
+- GNU-EFI development libraries
+
+**Phase 1 targets:**
+```bash
+# Install and verify toolchain (Rust custom target + GNU-EFI)
+make toolchain
+make verify-toolchain
+
+# Build EROFS system image from sysroot
+make system-image
+
+# Create disk image with GPT partition layout
+make disk-image
+
+# Run complete Phase 1 pipeline
+make phase1
+
+# Verify EROFS tooling
+make verify-erofs-tooling
+
+# Verify disk layout prerequisites
+make verify-disk-layout-prereqs
+
+# Clean build artifacts
+make clean
+```
+
+**Custom Rust target specs:**
+- Located in `toolchains/targets/`
+- Custom target: `x86_64-stratos-uefi`
+- Built with: `cargo build --target x86_64-stratos-uefi -Z build-std=core,alloc`
+
+**Artifacts:**
+- System image: `out/stratos-system.erofs`
+- Disk image: `out/stratos-disk.raw`
+
+### Quick Start
+
 1.  **Clone the Repository:** `git clone https://github.com/stratos-project/stratos`
-2.  **Toolchain Requirements:** Ensure you have the latest Rust stable and a cross-compilation C toolchain for UEFI.
-3.  **Build the Image:** Run `./strat-build.sh` to generate the EROFS system image and ESP partition.
-4.  **Run in QEMU:** ```bash
-    ./strat-run.sh --qemu --enable-kvm
-    ```
+2.  **Run Phase 1:** `make phase1`
+3.  **Run in QEMU:** (Phase 2+ implementation)
 
 ---
 

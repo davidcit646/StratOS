@@ -1,9 +1,9 @@
 > **This is the clean coding checklist for StratOS. Testing and validation are handled in a separate workflow. Follow the 'Custom First' rule: implement components ourselves before adding external dependencies.**
 
 ### Phase 1: Toolchain & Build System
-- [ ] Implement custom build script for EROFS image generation
-- [ ] Configure Rust toolchain for custom target specs
-- [ ] Create initial disk image layout utility (Partitioning A/B/C slots)
+- [x] Implement custom build script for EROFS image generation
+- [x] Configure Rust toolchain for custom target specs
+- [x] Create initial disk image layout utility (Partitioning A/B/C slots)
 
 ### Phase 2: StratBoot (Low-Level)
 - [x] Implement basic UEFI entry point in C
