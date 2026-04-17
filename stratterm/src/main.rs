@@ -1,142 +1,127 @@
-mod pty;
-mod parser;
-mod screen;
 mod font;
-mod renderer;
 mod keyboard;
+mod parser;
+mod pty;
+mod renderer;
+mod screen;
 mod wayland;
 
-use pty::Pty;
-use parser::VtParser;
-use screen::ScreenBuffer;
-use font::{FONT_WIDTH, FONT_HEIGHT};
-use renderer::Renderer;
-use keyboard::{keysym_to_char, keysym_to_control, is_control_key};
-use wayland::WaylandWindow;
+use font::{FONT_HEIGHT, FONT_WIDTH};
+use keyboard::{is_control_key, keysym_to_char, keysym_to_control};
 use nix::poll::{poll, PollFd, PollFlags};
+use parser::VtParser;
+use pty::Pty;
+use renderer::Renderer;
+use screen::ScreenBuffer;
 use std::os::unix::io::BorrowedFd;
+use wayland::WaylandWindow;
+
+const INITIAL_WIDTH: i32 = 800;
+const INITIAL_HEIGHT: i32 = 600;
 
 fn main() -> Result<(), String> {
-    // Initialize Wayland window
-    let mut window = WaylandWindow::new()
+    let mut window = WaylandWindow::new(INITIAL_WIDTH, INITIAL_HEIGHT)
         .map_err(|e| format!("Failed to create Wayland window: {}", e))?;
-    
-    let (width, height) = window.get_size();
-    
-    // Calculate grid size based on font dimensions
-    let cols = (width as usize) / FONT_WIDTH;
-    let rows = (height as usize) / FONT_HEIGHT;
-    
-    // Initialize screen buffer
+
+    let (mut width, mut height) = window.get_size();
+    let mut cols = (width as usize) / FONT_WIDTH;
+    let mut rows = (height as usize) / FONT_HEIGHT;
+
     let mut screen = ScreenBuffer::new(rows, cols);
-    
-    // Initialize PTY
     let pty = Pty::new(rows as u16, cols as u16)
         .map_err(|e| format!("Failed to create PTY: {}", e))?;
-    
-    // Initialize VT parser
     let mut parser = VtParser::new();
-    
-    // Initialize renderer
     let mut renderer = Renderer::new(width as u32, height as u32);
-    
-    // Initial render
-    renderer.render(&screen, &mut window)
-        .map_err(|e| format!("Failed to render: {}", e))?;
-    
-    // Set up polling
+
+    renderer
+        .render(&screen, &mut window)
+        .map_err(|e| format!("Initial render failed: {}", e))?;
+
     let pty_fd = pty.raw_fd();
     let wayland_fd = window.raw_fd();
-    
-    let mut poll_fds = unsafe {
-        [
-            PollFd::new(BorrowedFd::borrow_raw(pty_fd), PollFlags::POLLIN),
-            PollFd::new(BorrowedFd::borrow_raw(wayland_fd), PollFlags::POLLIN),
-        ]
-    };
-    
-    let mut buffer = [0u8; 8192];
-    
-    // Main event loop
+
+    let mut buf = [0u8; 8192];
+
     loop {
-        // Poll for events
-        let poll_result = poll(&mut poll_fds, None::<Option<u16>>)
+        let mut poll_fds = unsafe {
+            [
+                PollFd::new(BorrowedFd::borrow_raw(pty_fd), PollFlags::POLLIN),
+                PollFd::new(BorrowedFd::borrow_raw(wayland_fd), PollFlags::POLLIN),
+            ]
+        };
+
+        let n = poll(&mut poll_fds, None::<Option<u16>>)
             .map_err(|e| format!("poll failed: {}", e))?;
-        
-        if poll_result == 0 {
+        if n == 0 {
             continue;
         }
-        
-        // Check PTY for output
-        if poll_fds[0].revents().unwrap().contains(PollFlags::POLLIN) {
-            let bytes_read = pty.read(&mut buffer)
-                .map_err(|e| format!("Failed to read from PTY: {}", e))?;
-            
-            if bytes_read > 0 {
-                parser.parse(&mut screen, &buffer[..bytes_read]);
-                
-                renderer.render(&screen, &mut window)
-                    .map_err(|e| format!("Failed to render: {}", e))?;
-            } else {
-                // PTY closed, exit
+
+        let pty_ready = poll_fds[0]
+            .revents()
+            .map(|r| r.contains(PollFlags::POLLIN))
+            .unwrap_or(false);
+        let wayland_ready = poll_fds[1]
+            .revents()
+            .map(|r| r.contains(PollFlags::POLLIN))
+            .unwrap_or(false);
+
+        if pty_ready {
+            let read = pty
+                .read(&mut buf)
+                .map_err(|e| format!("PTY read failed: {}", e))?;
+            if read == 0 {
                 break;
             }
+            parser.parse(&mut screen, &buf[..read]);
+            renderer
+                .render(&screen, &mut window)
+                .map_err(|e| format!("Render failed: {}", e))?;
         }
-        
-        // Check Wayland for events
-        if poll_fds[1].revents().unwrap().contains(PollFlags::POLLIN) {
-            let events = window.poll_events()
-                .map_err(|e| format!("Failed to poll Wayland events: {}", e))?;
-            
+
+        if wayland_ready {
+            let events = window
+                .poll_events()
+                .map_err(|e| format!("Wayland poll failed: {}", e))?;
+
             for event in events {
-                match event {
-                    stratlayer::events::Event::XdgConfigure { serial, width, height, .. } => {
-                        window.ack_configure(serial);
-                        window.set_pending_size(width, height);
-                    }
-                    stratlayer::events::Event::XdgPing { .. } => {
-                        window.handle_event(&event);
-                    }
-                    stratlayer::events::Event::KeyboardKey { key, state, .. } => {
-                        if state == 1 { // Key pressed
-                            if is_control_key(key) {
-                                if let Some(control_seq) = keysym_to_control(key) {
-                                    if !control_seq.is_empty() {
-                                        pty.write(&control_seq)
-                                            .map_err(|e| format!("Failed to write to PTY: {}", e))?;
-                                    }
+                if let stratlayer::Event::KeyboardKey { key, state, .. } = event {
+                    if state == 1 {
+                        if is_control_key(key) {
+                            if let Some(seq) = keysym_to_control(key) {
+                                if !seq.is_empty() {
+                                    pty.write(&seq)
+                                        .map_err(|e| format!("PTY write failed: {}", e))?;
                                 }
-                            } else if let Some(ch) = keysym_to_char(key) {
-                                let mut buf = [0u8; 4];
-                                let ch_str = ch.encode_utf8(&mut buf);
-                                pty.write(ch_str.as_bytes())
-                                    .map_err(|e| format!("Failed to write to PTY: {}", e))?;
                             }
+                        } else if let Some(ch) = keysym_to_char(key) {
+                            let mut utf = [0u8; 4];
+                            let s = ch.encode_utf8(&mut utf);
+                            pty.write(s.as_bytes())
+                                .map_err(|e| format!("PTY write failed: {}", e))?;
                         }
                     }
-                    _ => {}
                 }
             }
-            
-            // Check for pending resize
-            if let Some((new_width, new_height)) = window.commit_pending_size() {
-                let new_cols = (new_width as usize) / FONT_WIDTH;
-                let new_rows = (new_height as usize) / FONT_HEIGHT;
-                
-                screen.resize(new_rows, new_cols);
-                renderer.resize(new_width as u32, new_height as u32);
-                
-                pty.resize(new_rows as u16, new_cols as u16)
-                    .map_err(|e| format!("Failed to resize PTY: {}", e))?;
-                
-                renderer.render(&screen, &mut window)
-                    .map_err(|e| format!("Failed to render: {}", e))?;
+
+            if let Some((new_w, new_h)) = window.commit_pending_size() {
+                if new_w != width || new_h != height {
+                    width = new_w;
+                    height = new_h;
+                    cols = (width as usize) / FONT_WIDTH;
+                    rows = (height as usize) / FONT_HEIGHT;
+
+                    screen.resize(rows, cols);
+                    renderer.resize(width as u32, height as u32);
+                    pty.resize(rows as u16, cols as u16)
+                        .map_err(|e| format!("PTY resize failed: {}", e))?;
+                    renderer
+                        .render(&screen, &mut window)
+                        .map_err(|e| format!("Render failed: {}", e))?;
+                }
             }
         }
     }
-    
-    // Wait for PTY child to exit
+
     let _ = pty.wait();
-    
     Ok(())
 }

@@ -1,5 +1,4 @@
 use crate::wire::protocol::{Argument, Message};
-use crate::wire::registry::ObjectRegistry;
 use crate::wire::socket::WaylandSocket;
 
 pub struct WlDisplay {
@@ -11,26 +10,25 @@ impl WlDisplay {
         WlDisplay { id }
     }
 
-    pub fn sync(&self, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
-        let callback_id = registry.allocate();
+    /// wl_display.sync(new_id callback)
+    /// Caller allocates `callback_id` and is responsible for registering the interface.
+    pub fn sync(&self, callback_id: u32, socket: &WaylandSocket) {
         let msg = Message::new(
             self.id,
-            0, // sync opcode
+            0,
             vec![Argument::NewId(callback_id)],
         );
         let _ = socket.send(&msg.serialize());
-        callback_id
     }
 
-    pub fn get_registry(&self, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
-        let registry_id = registry.allocate();
+    /// wl_display.get_registry(new_id registry)
+    pub fn get_registry(&self, registry_id: u32, socket: &WaylandSocket) {
         let msg = Message::new(
             self.id,
-            1, // get_registry opcode
+            1,
             vec![Argument::NewId(registry_id)],
         );
         let _ = socket.send(&msg.serialize());
-        registry_id
     }
 }
 
@@ -43,11 +41,20 @@ impl WlRegistry {
         WlRegistry { id }
     }
 
-    pub fn bind(&self, name: u32, interface: &str, version: u32, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
-        let new_id = registry.allocate();
+    /// wl_registry.bind(name, interface, version, new_id)
+    /// Per wayland-protocol, the NewId of `bind` carries the interface + version
+    /// inline as a string + version before the id.
+    pub fn bind(
+        &self,
+        name: u32,
+        interface: &str,
+        version: u32,
+        new_id: u32,
+        socket: &WaylandSocket,
+    ) {
         let msg = Message::new(
             self.id,
-            0, // bind opcode
+            0,
             vec![
                 Argument::Uint(name),
                 Argument::String(interface.to_string()),
@@ -56,7 +63,6 @@ impl WlRegistry {
             ],
         );
         let _ = socket.send(&msg.serialize());
-        new_id
     }
 }
 
@@ -69,15 +75,14 @@ impl WlCompositor {
         WlCompositor { id }
     }
 
-    pub fn create_surface(&self, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
-        let surface_id = registry.allocate();
+    /// wl_compositor.create_surface(new_id)
+    pub fn create_surface(&self, surface_id: u32, socket: &WaylandSocket) {
         let msg = Message::new(
             self.id,
-            0, // create_surface opcode
+            0,
             vec![Argument::NewId(surface_id)],
         );
         let _ = socket.send(&msg.serialize());
-        surface_id
     }
 }
 
@@ -93,7 +98,7 @@ impl WlSurface {
     pub fn attach(&self, buffer_id: u32, x: i32, y: i32, socket: &WaylandSocket) {
         let msg = Message::new(
             self.id,
-            0, // attach opcode
+            1, // attach
             vec![
                 Argument::Object(buffer_id),
                 Argument::Int(x),
@@ -106,7 +111,7 @@ impl WlSurface {
     pub fn damage(&self, x: i32, y: i32, width: i32, height: i32, socket: &WaylandSocket) {
         let msg = Message::new(
             self.id,
-            1, // damage opcode
+            2, // damage
             vec![
                 Argument::Int(x),
                 Argument::Int(y),
@@ -118,7 +123,7 @@ impl WlSurface {
     }
 
     pub fn commit(&self, socket: &WaylandSocket) {
-        let msg = Message::new(self.id, 2, vec![]); // commit opcode
+        let msg = Message::new(self.id, 6, vec![]); // commit
         let _ = socket.send(&msg.serialize());
     }
 }

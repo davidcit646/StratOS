@@ -1,224 +1,281 @@
-use stratlayer::{WaylandClient, protocols::{WlCompositor, WlDisplay, WlRegistry, WlSeat, WlShm, WlShmPool, WlBuffer, XdgWmBase, XdgSurface, XdgToplevel, WlSurface}, shm::ShmPool, events::{Event, Interface}};
-use std::os::unix::io::RawFd;
+use stratlayer::{
+    Event, Interface, ShmPool, WaylandClient, WlBuffer, WlCompositor, WlDisplay, WlRegistry,
+    WlSeat, WlShm, WlShmPool, WlSurface, XdgSurface, XdgToplevel, XdgWmBase,
+};
 use std::collections::HashMap;
+use std::os::unix::io::RawFd;
+
+const WL_SHM_FORMAT_ARGB8888: u32 = 0;
 
 pub struct WaylandWindow {
     client: WaylandClient,
+    #[allow(dead_code)]
     registry_id: u32,
-    globals: HashMap<String, u32>, // interface name -> global name
+    #[allow(dead_code)]
     compositor_id: u32,
+    #[allow(dead_code)]
     shm_id: u32,
-    shm_pool_id: u32,
+    #[allow(dead_code)]
     seat_id: u32,
     xdg_wm_base_id: u32,
     surface_id: u32,
     xdg_surface_id: u32,
+    #[allow(dead_code)]
     xdg_toplevel_id: u32,
+    #[allow(dead_code)]
     keyboard_id: u32,
+
+    shm_pool_id: u32,
+    shm_pool: ShmPool,
+    pool_size: usize,
+
     width: i32,
     height: i32,
     pending_width: Option<i32>,
     pending_height: Option<i32>,
-    shm_pool: Option<ShmPool>,
-    pool_size: usize,
+
+    current_buffer_id: Option<u32>,
+    configured: bool,
 }
 
 impl WaylandWindow {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(initial_width: i32, initial_height: i32) -> Result<Self, String> {
         let mut client = WaylandClient::new()
             .map_err(|e| format!("Failed to connect to Wayland: {}", e))?;
-        
-        let registry = client.registry();
-        let socket = client.socket();
-        
-        // Allocate IDs
-        let display_id = 1; // Display is always 1
-        let registry_id = registry.allocate();
-        
-        // Send wl_display.get_registry
-        let display = WlDisplay::new(display_id);
-        display.get_registry(registry, socket);
-        
-        // Read registry globals by polling for events
-        let events = client.poll()
-            .map_err(|e| format!("Failed to poll for registry globals: {}", e))?;
-        
-        // Collect global names from RegistryGlobal events
-        let mut globals = HashMap::new();
-        for event in &events {
-            if let Event::RegistryGlobal { name, interface, .. } = event {
-                globals.insert(interface.clone(), *name);
+
+        let registry_id = client.registry().allocate();
+        client.registry().set_interface(registry_id, Interface::WlRegistry);
+
+        let display = WlDisplay::new(1);
+        display.get_registry(registry_id, client.socket());
+
+        // Roundtrip #1: collect all registry globals.
+        let globals_events = client
+            .roundtrip()
+            .map_err(|e| format!("Roundtrip for globals failed: {}", e))?;
+
+        let mut globals: HashMap<String, (u32, u32)> = HashMap::new();
+        for ev in globals_events {
+            if let Event::RegistryGlobal { name, interface, version } = ev {
+                globals.insert(interface, (name, version));
             }
         }
-        
-        // Bind globals using compositor-assigned names
-        let compositor_name = globals.get("wl_compositor")
-            .ok_or("wl_compositor not found in registry")?;
-        let compositor_id = WlRegistry::new(registry_id).bind(*compositor_name, "wl_compositor", 1, registry, socket);
-        
-        let shm_name = globals.get("wl_shm")
-            .ok_or("wl_shm not found in registry")?;
-        let shm_id = WlRegistry::new(registry_id).bind(*shm_name, "wl_shm", 1, registry, socket);
-        
-        let seat_name = globals.get("wl_seat")
-            .ok_or("wl_seat not found in registry")?;
-        let seat_id = WlRegistry::new(registry_id).bind(*seat_name, "wl_seat", 1, registry, socket);
-        
-        let xdg_wm_base_name = globals.get("xdg_wm_base")
-            .ok_or("xdg_wm_base not found in registry")?;
-        let xdg_wm_base_id = WlRegistry::new(registry_id).bind(*xdg_wm_base_name, "xdg_wm_base", 1, registry, socket);
-        
-        // Allocate remaining IDs
-        let surface_id = registry.allocate();
-        let xdg_surface_id = registry.allocate();
-        let xdg_toplevel_id = registry.allocate();
-        let keyboard_id = registry.allocate();
-        
-        // Create surface
-        let compositor = WlCompositor::new(compositor_id);
-        compositor.create_surface(registry, socket);
-        
-        // Create xdg surface
-        let xdg_wm_base = XdgWmBase::new(xdg_wm_base_id);
-        xdg_wm_base.get_xdg_surface(surface_id, registry, socket);
-        
-        // Create xdg toplevel
-        let xdg_surface = XdgSurface::new(xdg_surface_id);
-        xdg_surface.get_toplevel(registry, socket);
-        
-        // Set title "StratTerm"
-        let xdg_toplevel = XdgToplevel::new(xdg_toplevel_id);
-        xdg_toplevel.set_title("StratTerm", socket);
-        
-        // Commit surface
-        let surface = WlSurface::new(surface_id);
-        surface.commit(socket);
-        
-        // Get keyboard
-        let seat = WlSeat::new(seat_id);
-        seat.get_keyboard(registry, socket);
-        
-        // Create SHM pool for buffer management
-        let initial_pool_size = 800 * 600 * 4; // width * height * 4 bytes per pixel (ARGB8888)
-        let shm_pool = ShmPool::create(initial_pool_size)
-            .map_err(|e| format!("Failed to create SHM pool: {}", e))?;
-        
-        let shm_pool_id = registry.allocate();
-        
-        // Announce pool to compositor NOW (required before any buffer creation)
-        let shm = WlShm::new(shm_id);
-        let pool_fd = shm_pool.fd();
-        shm.create_pool(pool_fd, initial_pool_size as i32, registry, socket);
-        
-        // Register interface mappings so events route correctly
-        registry.set_interface(registry_id, Interface::WlRegistry);
-        registry.set_interface(xdg_wm_base_id, Interface::XdgWmBase);
-        registry.set_interface(xdg_surface_id, Interface::XdgSurface);
-        registry.set_interface(keyboard_id, Interface::WlKeyboard);
-        
-        Ok(WaylandWindow {
+
+        let compositor_id = Self::bind_global(
+            &mut client, registry_id, &globals, "wl_compositor", 4, Interface::WlCompositor,
+        )?;
+        let shm_id = Self::bind_global(
+            &mut client, registry_id, &globals, "wl_shm", 1, Interface::WlShm,
+        )?;
+        let seat_id = Self::bind_global(
+            &mut client, registry_id, &globals, "wl_seat", 5, Interface::WlSeat,
+        )?;
+        let xdg_wm_base_id = Self::bind_global(
+            &mut client, registry_id, &globals, "xdg_wm_base", 1, Interface::XdgWmBase,
+        )?;
+
+        let surface_id = client.registry().allocate();
+        client.registry().set_interface(surface_id, Interface::WlSurface);
+
+        let xdg_surface_id = client.registry().allocate();
+        client.registry().set_interface(xdg_surface_id, Interface::XdgSurface);
+
+        let xdg_toplevel_id = client.registry().allocate();
+        client.registry().set_interface(xdg_toplevel_id, Interface::XdgToplevel);
+
+        let keyboard_id = client.registry().allocate();
+        client.registry().set_interface(keyboard_id, Interface::WlKeyboard);
+
+        {
+            let socket = client.socket();
+            WlCompositor::new(compositor_id).create_surface(surface_id, socket);
+            XdgWmBase::new(xdg_wm_base_id).get_xdg_surface(xdg_surface_id, surface_id, socket);
+            XdgSurface::new(xdg_surface_id).get_toplevel(xdg_toplevel_id, socket);
+            XdgToplevel::new(xdg_toplevel_id).set_title("StratTerm", socket);
+            XdgToplevel::new(xdg_toplevel_id).set_app_id("stratos.stratterm", socket);
+            WlSurface::new(surface_id).commit(socket);
+            WlSeat::new(seat_id).get_keyboard(keyboard_id, socket);
+        }
+
+        // SHM pool.
+        let pool_size = (initial_width * initial_height * 4) as usize;
+        let shm_pool = ShmPool::create(pool_size)
+            .map_err(|e| format!("SHM pool create failed: {}", e))?;
+
+        let shm_pool_id = client.registry().allocate();
+        client.registry().set_interface(shm_pool_id, Interface::WlShmPool);
+        WlShm::new(shm_id).create_pool(
+            shm_pool_id,
+            shm_pool.fd(),
+            pool_size as i32,
+            client.socket(),
+        );
+
+        let mut window = WaylandWindow {
             client,
             registry_id,
-            globals,
             compositor_id,
             shm_id,
-            shm_pool_id,
             seat_id,
             xdg_wm_base_id,
             surface_id,
             xdg_surface_id,
             xdg_toplevel_id,
             keyboard_id,
-            width: 800,
-            height: 600,
+            shm_pool_id,
+            shm_pool,
+            pool_size,
+            width: initial_width,
+            height: initial_height,
             pending_width: None,
             pending_height: None,
-            shm_pool: Some(shm_pool),
-            pool_size: initial_pool_size,
-        })
+            current_buffer_id: None,
+            configured: false,
+        };
+
+        // Roundtrip #2: pull in the initial xdg_surface / xdg_toplevel configure.
+        let events = window
+            .client
+            .roundtrip()
+            .map_err(|e| format!("Roundtrip for initial configure failed: {}", e))?;
+        window.apply_events(&events)?;
+
+        Ok(window)
     }
-    
-    pub fn poll_events(&mut self) -> Result<Vec<Event>, String> {
-        self.client.poll().map_err(|e| e.to_string())
+
+    fn bind_global(
+        client: &mut WaylandClient,
+        registry_id: u32,
+        globals: &HashMap<String, (u32, u32)>,
+        interface_name: &str,
+        max_version: u32,
+        interface: Interface,
+    ) -> Result<u32, String> {
+        let (name, server_version) = globals
+            .get(interface_name)
+            .copied()
+            .ok_or_else(|| format!("{} not advertised by compositor", interface_name))?;
+        let version = server_version.min(max_version);
+
+        let new_id = client.registry().allocate();
+        client.registry().set_interface(new_id, interface);
+
+        WlRegistry::new(registry_id).bind(name, interface_name, version, new_id, client.socket());
+        Ok(new_id)
     }
-    
-    pub fn handle_event(&mut self, event: &Event) {
-        match event {
-            Event::XdgPing { serial } => {
-                let xdg_wm_base = XdgWmBase::new(self.xdg_wm_base_id);
-                xdg_wm_base.pong(*serial, self.client.socket());
+
+    fn apply_events(&mut self, events: &[Event]) -> Result<(), String> {
+        for ev in events {
+            match ev {
+                Event::XdgPing { serial } => {
+                    XdgWmBase::new(self.xdg_wm_base_id).pong(*serial, self.client.socket());
+                }
+                Event::XdgToplevelConfigure { width, height, .. } => {
+                    if *width > 0 && *height > 0 {
+                        self.pending_width = Some(*width);
+                        self.pending_height = Some(*height);
+                    }
+                }
+                Event::XdgSurfaceConfigure { serial, .. } => {
+                    XdgSurface::new(self.xdg_surface_id)
+                        .ack_configure(*serial, self.client.socket());
+                    self.configured = true;
+                }
+                Event::BufferRelease { buffer_id } => {
+                    if Some(*buffer_id) == self.current_buffer_id {
+                        WlBuffer::new(*buffer_id).destroy(self.client.socket());
+                        self.current_buffer_id = None;
+                    }
+                }
+                Event::DisplayError { object_id, code, message } => {
+                    return Err(format!(
+                        "Wayland protocol error on object {}: code={}, message={}",
+                        object_id, code, message
+                    ));
+                }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-    
-    pub fn ack_configure(&mut self, serial: u32) {
-        let xdg_surface = XdgSurface::new(self.xdg_surface_id);
-        xdg_surface.ack_configure(serial, self.client.socket());
+
+    pub fn poll_events(&mut self) -> Result<Vec<Event>, String> {
+        let events = self
+            .client
+            .poll()
+            .map_err(|e| format!("poll failed: {}", e))?;
+        self.apply_events(&events)?;
+        Ok(events)
     }
-    
-    pub fn set_pending_size(&mut self, width: i32, height: i32) {
-        self.pending_width = Some(width);
-        self.pending_height = Some(height);
-    }
-    
+
     pub fn commit_pending_size(&mut self) -> Option<(i32, i32)> {
-        if let (Some(width), Some(height)) = (self.pending_width, self.pending_height) {
-            self.width = width;
-            self.height = height;
-            self.pending_width = None;
-            self.pending_height = None;
-            Some((width, height))
+        if let (Some(w), Some(h)) = (self.pending_width.take(), self.pending_height.take()) {
+            self.width = w;
+            self.height = h;
+            Some((w, h))
         } else {
             None
         }
     }
-    
+
     pub fn get_size(&self) -> (i32, i32) {
         (self.width, self.height)
     }
-    
-    pub fn render_buffer(&mut self, data: &[u8], width: u32, height: u32) -> Result<(), String> {
-        let pool = self.shm_pool.as_mut().ok_or("SHM pool not initialized")?;
-        let registry = self.client.registry();
-        
-        // Resize pool if needed
-        let required_size = data.len();
-        if required_size > self.pool_size {
-            pool.resize(required_size)
-                .map_err(|e| format!("Failed to resize SHM pool: {}", e))?;
-            self.pool_size = required_size;
-            
-            // Recreate wl_shm_pool object after resize
-            let shm = WlShm::new(self.shm_id);
-            let pool_fd = pool.fd();
-            shm.create_pool(pool_fd, required_size as i32, registry, self.client.socket());
+
+    pub fn is_configured(&self) -> bool {
+        self.configured
+    }
+
+    pub fn render_buffer(
+        &mut self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        if !self.configured {
+            return Ok(());
         }
-        
-        // Write pixel data into pool
+
+        let required = data.len();
+        if required > self.pool_size {
+            self.shm_pool
+                .resize(required)
+                .map_err(|e| format!("SHM pool resize failed: {}", e))?;
+            self.pool_size = required;
+            WlShmPool::new(self.shm_pool_id).resize(required as i32, self.client.socket());
+        }
+
         unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), pool.ptr(), data.len());
+            std::ptr::copy_nonoverlapping(data.as_ptr(), self.shm_pool.ptr(), data.len());
         }
-        
-        // Create buffer from pool
-        let shm_pool = WlShmPool::new(self.shm_pool_id);
-        let buffer_id = registry.allocate();
-        let stride = (width * 4) as i32; // ARGB8888 = 4 bytes per pixel
-        shm_pool.create_buffer(0, width as i32, height as i32, stride, 0, registry, self.client.socket());
-        
-        // Attach buffer to surface
+
+        if let Some(old_id) = self.current_buffer_id.take() {
+            WlBuffer::new(old_id).destroy(self.client.socket());
+        }
+
+        let buffer_id = self.client.registry().allocate();
+        self.client.registry().set_interface(buffer_id, Interface::WlBuffer);
+
+        let stride = (width * 4) as i32;
+        WlShmPool::new(self.shm_pool_id).create_buffer(
+            buffer_id,
+            0,
+            width as i32,
+            height as i32,
+            stride,
+            WL_SHM_FORMAT_ARGB8888,
+            self.client.socket(),
+        );
+
         let surface = WlSurface::new(self.surface_id);
         surface.attach(buffer_id, 0, 0, self.client.socket());
-        
-        // Damage full surface
         surface.damage(0, 0, width as i32, height as i32, self.client.socket());
-        
-        // Commit surface
         surface.commit(self.client.socket());
-        
+
+        self.current_buffer_id = Some(buffer_id);
         Ok(())
     }
-    
+
     pub fn raw_fd(&self) -> RawFd {
         self.client.raw_fd()
     }

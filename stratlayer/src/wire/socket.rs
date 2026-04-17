@@ -1,6 +1,5 @@
-use nix::sys::socket::{self, MsgFlags, SockFlag, SockType, socket as nix_socket, UnixAddr, sendmsg, ControlMessage};
+use nix::sys::socket::{self, MsgFlags, SockFlag, SockType, socket as nix_socket, UnixAddr};
 use nix::unistd::close;
-use std::io::IoSlice;
 use std::os::unix::io::{IntoRawFd, RawFd};
 
 #[derive(Debug)]

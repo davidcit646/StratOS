@@ -1,5 +1,4 @@
 use crate::wire::protocol::{Argument, Message};
-use crate::wire::registry::ObjectRegistry;
 use crate::wire::socket::WaylandSocket;
 use std::os::unix::io::RawFd;
 
@@ -13,25 +12,23 @@ impl WlShm {
     }
 
     /// wl_shm.create_pool(new_id, fd, size)
-    /// Allocates a pool id, sends the request with the fd as an SCM_RIGHTS attachment.
+    /// Caller allocates `pool_id`. fd travels as SCM_RIGHTS.
     pub fn create_pool(
         &self,
+        pool_id: u32,
         fd: RawFd,
         size: i32,
-        registry: &mut ObjectRegistry,
         socket: &WaylandSocket,
-    ) -> u32 {
-        let pool_id = registry.allocate();
+    ) {
         let msg = Message::new(
             self.id,
-            0, // create_pool
+            0,
             vec![
                 Argument::NewId(pool_id),
                 Argument::Int(size),
             ],
         );
         let _ = socket.send_with_fd(&msg.serialize(), fd);
-        pool_id
     }
 }
 
@@ -47,18 +44,17 @@ impl WlShmPool {
     /// wl_shm_pool.create_buffer(new_id, offset, width, height, stride, format)
     pub fn create_buffer(
         &self,
+        buffer_id: u32,
         offset: i32,
         width: i32,
         height: i32,
         stride: i32,
         format: u32,
-        registry: &mut ObjectRegistry,
         socket: &WaylandSocket,
-    ) -> u32 {
-        let buffer_id = registry.allocate();
+    ) {
         let msg = Message::new(
             self.id,
-            0, // create_buffer
+            0,
             vec![
                 Argument::NewId(buffer_id),
                 Argument::Int(offset),
@@ -69,7 +65,6 @@ impl WlShmPool {
             ],
         );
         let _ = socket.send(&msg.serialize());
-        buffer_id
     }
 
     pub fn destroy(&self, socket: &WaylandSocket) {

@@ -27,11 +27,9 @@ impl Pty {
         let (master_fd, child_pid) = match fork_result {
             ForkptyResult::Parent { master, child } => (master.into_raw_fd(), child),
             ForkptyResult::Child => {
-                // Child process - spawn shell
                 let shell = CString::new("/bin/sh").unwrap();
                 let shell_name = CString::new("sh").unwrap();
-                
-                // Set environment variables
+
                 std::env::set_var("TERM", "xterm-256color");
                 std::env::set_var("COLORTERM", "truecolor");
                 std::env::set_var("COLUMNS", cols.to_string());
@@ -40,9 +38,9 @@ impl Pty {
                 std::env::set_var("HOME", "/home/user");
                 std::env::set_var("SHELL", "/bin/sh");
 
-                execvp(&shell, &[&shell_name])
-                    .expect("execvp failed");
-                // execvp never returns
+                let _ = execvp(&shell, &[&shell_name]);
+                // execvp only returns on error
+                std::process::exit(127);
             }
         };
 
