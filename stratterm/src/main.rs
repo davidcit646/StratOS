@@ -94,10 +94,8 @@ fn main() -> Result<(), String> {
                         window.ack_configure(serial);
                         window.set_pending_size(width, height);
                     }
-                    stratlayer::events::Event::XdgPing { serial: _ } => {
-                        // Respond to ping
-                        // Note: This would require sending a pong message through the socket
-                        // For MVP, we'll skip this
+                    stratlayer::events::Event::XdgPing { .. } => {
+                        window.handle_event(&event);
                     }
                     stratlayer::events::Event::KeyboardKey { key, state, .. } => {
                         if state == 1 { // Key pressed

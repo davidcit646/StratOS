@@ -1,57 +1,58 @@
 use crate::wire::protocol::Message;
 use crate::wire::socket::WaylandSocket;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-pub type Handler = Box<dyn Fn(&Message) + Send>;
+use std::os::unix::io::RawFd;
 
 pub struct Dispatcher {
     socket: WaylandSocket,
-    handlers: Arc<Mutex<HashMap<(u32, u16), Handler>>>,
+    /// Bytes left over from a partial message on the previous read.
+    pending: Vec<u8>,
 }
 
 impl Dispatcher {
-    pub fn new(socket: WaylandSocket) -> Self {
+    pub fn from_fd(fd: RawFd) -> Self {
         Dispatcher {
-            socket,
-            handlers: Arc::new(Mutex::new(HashMap::new())),
+            socket: WaylandSocket::from_raw_fd(fd),
+            pending: Vec::new(),
         }
     }
 
-    pub fn register_handler<F>(&self, sender_id: u32, opcode: u16, handler: F)
-    where
-        F: Fn(&Message) + Send + 'static,
-    {
-        let mut handlers = self.handlers.lock().unwrap();
-        handlers.insert((sender_id, opcode), Box::new(handler));
-    }
-
-    pub fn dispatch_once(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut buffer = vec![0u8; 4096];
-        let bytes_read = self.socket.receive(&mut buffer)?;
-        
-        if bytes_read < 8 {
-            return Err("Invalid message: too short".into());
+    /// Blocking read from the Wayland socket; returns as many complete messages as fit.
+    /// Call poll(POLLIN) before this if you want non-blocking behavior.
+    pub fn dispatch_once(&mut self) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+        let mut buf = [0u8; 8192];
+        let n = self.socket.receive(&mut buf)?;
+        if n == 0 {
+            return Ok(Vec::new());
         }
+        self.pending.extend_from_slice(&buf[..n]);
 
-        if let Some(message) = Message::deserialize(&buffer[..bytes_read]) {
-            let handlers = self.handlers.lock().unwrap();
-            let key = (message.header.sender_id, message.header.opcode);
-            if let Some(handler) = handlers.get(&key) {
-                handler(&message);
+        let mut messages = Vec::new();
+        let mut offset = 0;
+        while self.pending.len() - offset >= 8 {
+            let length = u16::from_le_bytes([
+                self.pending[offset + 6],
+                self.pending[offset + 7],
+            ]) as usize;
+
+            if length < 8 {
+                // Corrupt — bail out, drop the rest
+                self.pending.clear();
+                break;
             }
+            if self.pending.len() - offset < length {
+                break;
+            }
+
+            if let Some(msg) = Message::deserialize(&self.pending[offset..offset + length]) {
+                messages.push(msg);
+            }
+            offset += length;
         }
 
-        Ok(())
-    }
-
-    pub fn dispatch_loop<F>(&self, mut should_stop: F) -> Result<(), Box<dyn std::error::Error>>
-    where
-        F: FnMut() -> bool,
-    {
-        while !should_stop() {
-            self.dispatch_once()?;
+        if offset > 0 {
+            self.pending.drain(..offset);
         }
-        Ok(())
+
+        Ok(messages)
     }
 }

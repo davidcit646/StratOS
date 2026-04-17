@@ -35,6 +35,10 @@ pub struct ScreenBuffer {
     pub cols: usize,
     pub scroll_top: usize,
     pub scroll_bottom: usize,
+    pub current_fg: Color,
+    pub current_bg: Color,
+    pub current_bold: bool,
+    pub current_underline: bool,
 }
 
 impl ScreenBuffer {
@@ -48,6 +52,10 @@ impl ScreenBuffer {
             cols,
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
+            current_fg: Color::Default,
+            current_bg: Color::Default,
+            current_bold: false,
+            current_underline: false,
         }
     }
 
@@ -97,6 +105,10 @@ impl ScreenBuffer {
     pub fn put_char(&mut self, ch: char) {
         if self.cursor_row < self.rows && self.cursor_col < self.cols {
             self.cells[self.cursor_row][self.cursor_col].ch = ch;
+            self.cells[self.cursor_row][self.cursor_col].fg = self.current_fg;
+            self.cells[self.cursor_row][self.cursor_col].bg = self.current_bg;
+            self.cells[self.cursor_row][self.cursor_col].bold = self.current_bold;
+            self.cells[self.cursor_row][self.cursor_col].underline = self.current_underline;
             self.cursor_col += 1;
             if self.cursor_col >= self.cols {
                 self.cursor_col = 0;
@@ -149,21 +161,15 @@ impl ScreenBuffer {
     }
 
     pub fn set_color(&mut self, fg: Color, bg: Color) {
-        if self.cursor_row < self.rows && self.cursor_col < self.cols {
-            self.cells[self.cursor_row][self.cursor_col].fg = fg;
-            self.cells[self.cursor_row][self.cursor_col].bg = bg;
-        }
+        self.current_fg = fg;
+        self.current_bg = bg;
     }
 
     pub fn set_bold(&mut self, bold: bool) {
-        if self.cursor_row < self.rows && self.cursor_col < self.cols {
-            self.cells[self.cursor_row][self.cursor_col].bold = bold;
-        }
+        self.current_bold = bold;
     }
 
     pub fn set_underline(&mut self, underline: bool) {
-        if self.cursor_row < self.rows && self.cursor_col < self.cols {
-            self.cells[self.cursor_row][self.cursor_col].underline = underline;
-        }
+        self.current_underline = underline;
     }
 }

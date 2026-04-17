@@ -43,15 +43,16 @@ impl WlRegistry {
         WlRegistry { id }
     }
 
-    pub fn bind(&self, interface: &str, version: u32, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
+    pub fn bind(&self, name: u32, interface: &str, version: u32, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
         let new_id = registry.allocate();
         let msg = Message::new(
             self.id,
             0, // bind opcode
             vec![
+                Argument::Uint(name),
                 Argument::String(interface.to_string()),
-                Argument::Uint(new_id),
                 Argument::Uint(version),
+                Argument::NewId(new_id),
             ],
         );
         let _ = socket.send(&msg.serialize());

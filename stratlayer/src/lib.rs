@@ -3,7 +3,7 @@ pub mod protocols;
 pub mod shm;
 pub mod wire;
 
-pub use events::Event;
+pub use events::{Event, Interface};
 pub use protocols::{WlCompositor, WlDisplay, WlRegistry, WlSurface, WlShm, WlShmPool, WlBuffer, XdgWmBase, XdgSurface, XdgToplevel, WlSeat, WlKeyboard};
 pub use shm::{ShmPool, ShmBuffer};
 pub use wire::{WaylandSocket, Dispatcher, ObjectRegistry, Message, Argument, MessageHeader};
@@ -21,8 +21,9 @@ impl WaylandClient {
 
     pub fn connect(display_name: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
         let socket = WaylandSocket::connect(display_name)?;
+        let fd = socket.raw_fd();
         let registry = ObjectRegistry::new();
-        let dispatcher = Dispatcher::new(WaylandSocket::connect(display_name)?);
+        let dispatcher = Dispatcher::from_fd(fd);
         
         Ok(WaylandClient {
             socket,
@@ -48,7 +49,13 @@ impl WaylandClient {
     }
 
     pub fn poll(&mut self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-        self.dispatcher.dispatch_once()?;
-        Ok(Vec::new()) // Placeholder - events would be collected from handlers
+        let messages = self.dispatcher.dispatch_once()?;
+        let events = messages.iter()
+            .filter_map(|msg| {
+                let iface = self.registry.get_interface(msg.header.sender_id);
+                Event::from_message(msg, iface)
+            })
+            .collect();
+        Ok(events)
     }
 }

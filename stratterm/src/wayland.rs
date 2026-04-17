@@ -1,8 +1,11 @@
-use stratlayer::{WaylandClient, protocols::{WlCompositor, WlDisplay, WlRegistry, WlSeat, WlShm, WlShmPool, WlBuffer, XdgWmBase, XdgSurface, XdgToplevel, WlSurface}, shm::ShmPool, events::Event};
+use stratlayer::{WaylandClient, protocols::{WlCompositor, WlDisplay, WlRegistry, WlSeat, WlShm, WlShmPool, WlBuffer, XdgWmBase, XdgSurface, XdgToplevel, WlSurface}, shm::ShmPool, events::{Event, Interface}};
 use std::os::unix::io::RawFd;
+use std::collections::HashMap;
 
 pub struct WaylandWindow {
     client: WaylandClient,
+    registry_id: u32,
+    globals: HashMap<String, u32>, // interface name -> global name
     compositor_id: u32,
     shm_id: u32,
     shm_pool_id: u32,
@@ -31,28 +34,45 @@ impl WaylandWindow {
         // Allocate IDs
         let display_id = 1; // Display is always 1
         let registry_id = registry.allocate();
-        let compositor_id = registry.allocate();
-        let shm_id = registry.allocate();
-        let seat_id = registry.allocate();
-        let xdg_wm_base_id = registry.allocate();
-        let surface_id = registry.allocate();
-        let xdg_surface_id = registry.allocate();
-        let xdg_toplevel_id = registry.allocate();
-        let keyboard_id = registry.allocate();
         
         // Send wl_display.get_registry
         let display = WlDisplay::new(display_id);
         display.get_registry(registry, socket);
         
         // Read registry globals by polling for events
-        let _events = client.poll()
+        let events = client.poll()
             .map_err(|e| format!("Failed to poll for registry globals: {}", e))?;
         
-        // Bind globals
-        let compositor_id = WlRegistry::new(registry_id).bind("wl_compositor", 1, registry, socket);
-        let shm_id = WlRegistry::new(registry_id).bind("wl_shm", 1, registry, socket);
-        let seat_id = WlRegistry::new(registry_id).bind("wl_seat", 1, registry, socket);
-        let xdg_wm_base_id = WlRegistry::new(registry_id).bind("xdg_wm_base", 1, registry, socket);
+        // Collect global names from RegistryGlobal events
+        let mut globals = HashMap::new();
+        for event in &events {
+            if let Event::RegistryGlobal { name, interface, .. } = event {
+                globals.insert(interface.clone(), *name);
+            }
+        }
+        
+        // Bind globals using compositor-assigned names
+        let compositor_name = globals.get("wl_compositor")
+            .ok_or("wl_compositor not found in registry")?;
+        let compositor_id = WlRegistry::new(registry_id).bind(*compositor_name, "wl_compositor", 1, registry, socket);
+        
+        let shm_name = globals.get("wl_shm")
+            .ok_or("wl_shm not found in registry")?;
+        let shm_id = WlRegistry::new(registry_id).bind(*shm_name, "wl_shm", 1, registry, socket);
+        
+        let seat_name = globals.get("wl_seat")
+            .ok_or("wl_seat not found in registry")?;
+        let seat_id = WlRegistry::new(registry_id).bind(*seat_name, "wl_seat", 1, registry, socket);
+        
+        let xdg_wm_base_name = globals.get("xdg_wm_base")
+            .ok_or("xdg_wm_base not found in registry")?;
+        let xdg_wm_base_id = WlRegistry::new(registry_id).bind(*xdg_wm_base_name, "xdg_wm_base", 1, registry, socket);
+        
+        // Allocate remaining IDs
+        let surface_id = registry.allocate();
+        let xdg_surface_id = registry.allocate();
+        let xdg_toplevel_id = registry.allocate();
+        let keyboard_id = registry.allocate();
         
         // Create surface
         let compositor = WlCompositor::new(compositor_id);
@@ -85,8 +105,21 @@ impl WaylandWindow {
         
         let shm_pool_id = registry.allocate();
         
+        // Announce pool to compositor NOW (required before any buffer creation)
+        let shm = WlShm::new(shm_id);
+        let pool_fd = shm_pool.fd();
+        shm.create_pool(pool_fd, initial_pool_size as i32, registry, socket);
+        
+        // Register interface mappings so events route correctly
+        registry.set_interface(registry_id, Interface::WlRegistry);
+        registry.set_interface(xdg_wm_base_id, Interface::XdgWmBase);
+        registry.set_interface(xdg_surface_id, Interface::XdgSurface);
+        registry.set_interface(keyboard_id, Interface::WlKeyboard);
+        
         Ok(WaylandWindow {
             client,
+            registry_id,
+            globals,
             compositor_id,
             shm_id,
             shm_pool_id,
@@ -106,8 +139,17 @@ impl WaylandWindow {
     }
     
     pub fn poll_events(&mut self) -> Result<Vec<Event>, String> {
-        self.client.poll()
-            .map_err(|e| format!("Failed to poll events: {}", e))
+        self.client.poll().map_err(|e| e.to_string())
+    }
+    
+    pub fn handle_event(&mut self, event: &Event) {
+        match event {
+            Event::XdgPing { serial } => {
+                let xdg_wm_base = XdgWmBase::new(self.xdg_wm_base_id);
+                xdg_wm_base.pong(*serial, self.client.socket());
+            }
+            _ => {}
+        }
     }
     
     pub fn ack_configure(&mut self, serial: u32) {

@@ -1,8 +1,10 @@
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use nix::sys::memfd::{memfd_create, MemFdCreateFlag};
-use nix::unistd::{close, ftruncate};
-use std::os::unix::io::{BorrowedFd, OwnedFd, RawFd};
+use nix::unistd::ftruncate;
+use std::ffi::CStr;
 use std::num::NonZeroUsize;
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::unix::io::RawFd;
 
 pub struct ShmPool {
     fd: OwnedFd,
@@ -12,9 +14,10 @@ pub struct ShmPool {
 
 impl ShmPool {
     pub fn create(size: usize) -> Result<Self, Box<dyn std::error::Error>> {
-        let fd = memfd_create("stratterm_shm", MemFdCreateFlag::MFD_CLOEXEC)?;
+        let name = CStr::from_bytes_with_nul(b"stratterm_shm\0")?;
+        let fd: OwnedFd = memfd_create(name, MemFdCreateFlag::MFD_CLOEXEC)?;
 
-        ftruncate(BorrowedFd::from(&fd), size as i64)?;
+        ftruncate(fd.as_fd(), size as i64)?;
 
         let ptr = unsafe {
             mmap(
@@ -22,7 +25,7 @@ impl ShmPool {
                 NonZeroUsize::new(size).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                BorrowedFd::from(&fd),
+                fd.as_fd(),
                 0,
             )?
         }.as_ptr() as *mut u8;
@@ -43,7 +46,7 @@ impl ShmPool {
     }
 
     pub fn resize(&mut self, new_size: usize) -> Result<(), Box<dyn std::error::Error>> {
-        ftruncate(BorrowedFd::from(&self.fd), new_size as i64)?;
+        ftruncate(self.fd.as_fd(), new_size as i64)?;
 
         unsafe {
             if !self.ptr.is_null() {
@@ -57,7 +60,7 @@ impl ShmPool {
                 NonZeroUsize::new(new_size).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                BorrowedFd::from(&self.fd),
+                self.fd.as_fd(),
                 0,
             )?
         }.as_ptr() as *mut u8;
@@ -74,6 +77,5 @@ impl Drop for ShmPool {
                 let _ = libc::munmap(self.ptr as *mut libc::c_void, self.size);
             }
         }
-        let _ = close(self.fd.as_raw_fd());
     }
 }

@@ -1,5 +1,6 @@
-use nix::sys::socket::{self, MsgFlags, SockFlag, SockType, socket as nix_socket, UnixAddr, sendmsg, msghdr, IoVec, ControlMessage};
+use nix::sys::socket::{self, MsgFlags, SockFlag, SockType, socket as nix_socket, UnixAddr, sendmsg, ControlMessage};
 use nix::unistd::close;
+use std::io::IoSlice;
 use std::os::unix::io::{IntoRawFd, RawFd};
 
 #[derive(Debug)]
@@ -34,6 +35,7 @@ impl std::error::Error for Error {
 
 pub struct WaylandSocket {
     fd: RawFd,
+    owns_fd: bool,
 }
 
 impl WaylandSocket {
@@ -66,7 +68,7 @@ impl WaylandSocket {
 
         socket::connect(fd, &sockaddr).map_err(Error::SocketConnect)?;
 
-        Ok(WaylandSocket { fd })
+        Ok(WaylandSocket { fd, owns_fd: true })
     }
 
     pub fn send(&self, message: &[u8]) -> Result<(), Error> {
@@ -75,12 +77,12 @@ impl WaylandSocket {
     }
 
     pub fn send_with_fd(&self, message: &[u8], fd: RawFd) -> Result<(), Error> {
-        let iov = [IoVec::new(message)];
-        let fds = [fd];
-        let cmsg = ControlMessage::ScmRights(&fds);
-        let msg = msghdr::new(iov.as_slice(), &[], &[cmsg], MsgFlags::empty())
+        use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
+        use std::io::IoSlice;
+        let iov = [IoSlice::new(message)];
+        let cmsg = [ControlMessage::ScmRights(&[fd])];
+        sendmsg::<()>(self.fd, &iov, &cmsg, MsgFlags::empty(), None)
             .map_err(Error::Send)?;
-        sendmsg(self.fd, &msg, MsgFlags::empty()).map_err(Error::Send)?;
         Ok(())
     }
 
@@ -92,10 +94,16 @@ impl WaylandSocket {
     pub fn raw_fd(&self) -> RawFd {
         self.fd
     }
+
+    pub fn from_raw_fd(fd: RawFd) -> Self {
+        WaylandSocket { fd, owns_fd: false }
+    }
 }
 
 impl Drop for WaylandSocket {
     fn drop(&mut self) {
-        let _ = close(self.fd);
+        if self.owns_fd {
+            let _ = close(self.fd);
+        }
     }
 }

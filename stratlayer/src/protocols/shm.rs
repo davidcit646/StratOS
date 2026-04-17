@@ -12,14 +12,21 @@ impl WlShm {
         WlShm { id }
     }
 
-    pub fn create_pool(&self, fd: RawFd, size: i32, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
+    /// wl_shm.create_pool(new_id, fd, size)
+    /// Allocates a pool id, sends the request with the fd as an SCM_RIGHTS attachment.
+    pub fn create_pool(
+        &self,
+        fd: RawFd,
+        size: i32,
+        registry: &mut ObjectRegistry,
+        socket: &WaylandSocket,
+    ) -> u32 {
         let pool_id = registry.allocate();
         let msg = Message::new(
             self.id,
-            0, // create_pool opcode
+            0, // create_pool
             vec![
                 Argument::NewId(pool_id),
-                Argument::Fd(fd),
                 Argument::Int(size),
             ],
         );
@@ -37,6 +44,7 @@ impl WlShmPool {
         WlShmPool { id }
     }
 
+    /// wl_shm_pool.create_buffer(new_id, offset, width, height, stride, format)
     pub fn create_buffer(
         &self,
         offset: i32,
@@ -50,7 +58,7 @@ impl WlShmPool {
         let buffer_id = registry.allocate();
         let msg = Message::new(
             self.id,
-            0, // create_buffer opcode
+            0, // create_buffer
             vec![
                 Argument::NewId(buffer_id),
                 Argument::Int(offset),
@@ -64,9 +72,14 @@ impl WlShmPool {
         buffer_id
     }
 
-    pub fn destroy(&self) {
-        let _msg = Message::new(self.id, 1, vec![]); // destroy opcode
-        // Send message to socket would happen here
+    pub fn destroy(&self, socket: &WaylandSocket) {
+        let msg = Message::new(self.id, 1, vec![]);
+        let _ = socket.send(&msg.serialize());
+    }
+
+    pub fn resize(&self, size: i32, socket: &WaylandSocket) {
+        let msg = Message::new(self.id, 2, vec![Argument::Int(size)]);
+        let _ = socket.send(&msg.serialize());
     }
 }
 
@@ -79,8 +92,12 @@ impl WlBuffer {
         WlBuffer { id }
     }
 
-    pub fn destroy(&self) {
-        let _msg = Message::new(self.id, 0, vec![]); // destroy opcode
-        // Send message to socket would happen here
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn destroy(&self, socket: &WaylandSocket) {
+        let msg = Message::new(self.id, 0, vec![]);
+        let _ = socket.send(&msg.serialize());
     }
 }
