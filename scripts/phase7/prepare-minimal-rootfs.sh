@@ -6,12 +6,13 @@ ROOTFS_DIR="$REPO_ROOT/out/phase7/rootfs-minimal"
 INIT_SOURCE="$REPO_ROOT/sysroot/system-init.c"
 FIRST_BOOT_SOURCE="$REPO_ROOT/sysroot/first-boot-provision.sh"
 VALIDATE_SERVICE_SOURCE="$REPO_ROOT/services/systemd/strat-validate-boot.service"
-VALIDATE_BIN_SOURCE="$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/strat-validate-boot"
+VALIDATE_BIN_SOURCE="${VALIDATE_BIN_SOURCE:-$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/strat-validate-boot}"
 STRATWM_BIN_SOURCE="${STRATWM_BIN_SOURCE:-$REPO_ROOT/stratvm/stratwm}"
 STRATTERM_BIN_SOURCE="${STRATTERM_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/stratterm}"
 STRATTERM_INDEXER_BIN_SOURCE="${STRATTERM_INDEXER_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/stratterm-indexer}"
 STRAT_SETTINGS_BIN_SOURCE="${STRAT_SETTINGS_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/strat-settings}"
 STRATTERM_INDEXER_BOOT_SOURCE="$REPO_ROOT/sysroot/strat-indexer-boot.sh"
+STRATSTOP_BIN_SOURCE="${STRATSTOP_BIN_SOURCE:-$REPO_ROOT/stratstop/bin/stratstop}"
 SHELL_BIN_SOURCE="${SHELL_BIN_SOURCE:-/bin/sh}"
 SEATD_BIN_SOURCE="${SEATD_BIN_SOURCE:-$REPO_ROOT/third_party/seatd/build/seatd}"
 FOOT_BIN_SOURCE="${FOOT_BIN_SOURCE:-/usr/bin/foot}"
@@ -123,7 +124,7 @@ runtime_collect_deps() {
             verbose=1
             strict=1
             ;;
-        "$ROOTFS_DIR/bin/foot")
+        "$ROOTFS_DIR/bin/foot"|"$ROOTFS_DIR/bin/stratterm")
             verbose=1
             strict=0
             ;;
@@ -315,6 +316,11 @@ fi
 if [ -x "$SHELL_BIN_SOURCE" ]; then
     cp -aL "$SHELL_BIN_SOURCE" "$ROOTFS_DIR/bin/sh"
     chmod 0755 "$ROOTFS_DIR/bin/sh"
+fi
+
+if [ -x "$STRATSTOP_BIN_SOURCE" ]; then
+    cp -aL "$STRATSTOP_BIN_SOURCE" "$ROOTFS_DIR/bin/stratstop"
+    chmod 0755 "$ROOTFS_DIR/bin/stratstop"
 fi
 
 if [ -x "$SEATD_BIN_SOURCE" ]; then

@@ -20,7 +20,7 @@ impl ShmBuffer {
     }
 
     pub fn data_mut(&mut self) -> &mut [u8] {
-        let ptr = self.pool.ptr().add(self.offset);
+        let ptr = unsafe { self.pool.ptr().add(self.offset) };
         let size = self.height as usize * self.stride as usize;
         unsafe { std::slice::from_raw_parts_mut(ptr, size) }
     }

@@ -11,7 +11,7 @@
 StratOS is an independent operating system built on a tuned Linux kernel, designed to bridge the gap between "experimental" hobbyist projects and "bloated" mainstream distributions. 
 
 ### What it IS:
-* **Custom-First:** We build our own core components (StratTerm, Strat WM, Spotlite) rather than pulling in heavy external stacks.
+* **Custom-First:** We build our own core components (StratTerm, stratvm, Spotlite) rather than pulling in heavy external stacks.
 * **Atomic & Immutable:** The system root is a read-only EROFS image. Updates are applied to inactive slots with instant rollback capability.
 * **Structurally Honest:** We enforce a strict separation between `/system` (immutable), `/config` (persistent system settings), and `/user` (personal data).
 * **Modern & Secure:** Written primarily in **Rust** for safety-critical user-space and **C** for low-level boot logic.
@@ -26,7 +26,7 @@ StratOS is an independent operating system built on a tuned Linux kernel, design
 ## Key Features
 
 * **StratBoot:** A custom UEFI bootloader and update surgeon.
-* **Strat WM:** A fast, tiling Wayland compositor written from scratch for performance.
+* **stratvm:** A fast, tiling Wayland compositor written from scratch for performance.
 * **StratMon:** A secure update conductor that manages A/B/C slot transitions.
 * **The .strat Format:** A signed, sandboxed package format designed for the StratOS ecosystem.
 * **Spotlite:** An integrated, intelligent system search and launcher.

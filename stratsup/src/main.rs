@@ -408,4 +408,9 @@ fn main() {
             }
         }
     }
+
+    // Execute stratstop to draw shutdown logo before exiting
+    if let Err(err) = supervisor.execute_stratstop() {
+        eprintln!("stratsup: {}", err);
+    }
 }

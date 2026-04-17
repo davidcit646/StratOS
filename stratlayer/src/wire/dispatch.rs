@@ -1,4 +1,4 @@
-use crate::wire::protocol::{Message, MessageHeader};
+use crate::wire::protocol::Message;
 use crate::wire::socket::WaylandSocket;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -77,7 +77,7 @@ fi
     --output "$INITRAMFS_OUT"
 
 if [ "$BUILD_STRATTERM_INDEXER" = "1" ]; then
-    make -C "$REPO_ROOT/stratterm" release-indexer
+    cargo build --release --manifest-path "$REPO_ROOT/stratterm/Cargo.toml"
 fi
 
 "$REPO_ROOT/scripts/phase7/prepare-minimal-rootfs.sh" \

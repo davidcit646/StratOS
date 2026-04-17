@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::os::unix::io::RawFd;
 
 #[repr(C)]
@@ -94,10 +93,10 @@ impl Argument {
             Argument::Uint(_) => 4,
             Argument::Int(_) => 4,
             Argument::Fixed(_) => 4,
-            Argument::String(s) => (4 + s.len() + 1 + 3) & !3, // 4-byte length + string + null + padding
-            Argument::Object(_) => 4,
+            Argument::String(s) => ((4 + s.len() + 1 + 3) & !3) as u16, // 4-byte length + string + null + padding
+            Argument::Object(_) => 4 as u16,
             Argument::NewId(_) => 4,
-            Argument::Array(v) => (4 + v.len() + 3) & !3, // 4-byte length + data + padding
+            Argument::Array(v) => ((4 + v.len() + 3) & !3) as u16, // 4-byte length + data + padding
             Argument::Fd(_) => 4,
         }
     }

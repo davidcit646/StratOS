@@ -440,7 +440,7 @@ systemd oneshot service. Runs in `sysinit.target` before user services. 30 secon
 - /config mounted and read-write
 - /home mounted and accessible
 - Critical system binaries present
-- Strat WM binary present
+- stratvm binary present
 - Network subsystem available
 
 **Pass:** writes `STRAT_SLOT_X_STATUS = confirmed` to EFI variable. Silent.
@@ -515,7 +515,7 @@ Never automatic. Never nags. Never prompts unprompted. If the user wants to upda
 User confirms switch
     ↓
 Screen fades to dark
-Strat WM overlay — input consumed and discarded
+stratvm overlay — input consumed and discarded
 Message:
     "Switching systems. Don't touch anything."
     "Back in about 5 minutes."
@@ -764,11 +764,11 @@ No wall of permissions on install that nobody reads.
 
 ---
 
-## 9. DESKTOP ENVIRONMENT — Strat WM
+## 9. DESKTOP ENVIRONMENT — stratvm
 
 ### 9.1 Compositor
 
-**Strat WM** — built on wlroots directly. Not Sway. Not Hyprland. Ours.
+**stratvm** — built on wlroots directly. Not Sway. Not Hyprland. Ours.
 
 Sway is rigid. Its configuration file is its UI. It was never designed for what Strat needs — per-window decoration control, live tiling/floating toggle from a settings UI, Cover Flow, panel with blur and auto-hide, SPOTLITE overlay rendering, and a clean IPC socket. Building on wlroots directly gives full control.
 
@@ -1419,7 +1419,7 @@ loop
 ### 16.2 Applications
 
 - StratBoot slot logic and reset operations
-- Strat WM compositor subsystems
+- stratvm compositor subsystems
 - strat-build dependency resolution
 - Supervisor pivot orchestration
 - Boot validation service
@@ -1650,7 +1650,7 @@ Every reset operation — from CONFIG wipe to full factory reset — executes in
 12. **SPOTLITE** — system-wide search, zero web results, zero ads, zero telemetry
 13. **Cover Flow window switcher** — live window previews, smooth perspective animation
 14. **Per-window tiling/floating** — no religious commitment required
-15. **Strat WM** — wlroots compositor, clean IPC, built for Strat's requirements
+15. **stratvm** — wlroots compositor, clean IPC, built for Strat's requirements
 16. **AI-assisted error reporting** — clipboard-ready diagnostic output, first-class feature
 17. **Home corruption detection** — caught at boot, never reaches broken desktop
 18. **Recovery terminal** — full shell access, one guardrail, everything else open

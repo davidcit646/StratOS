@@ -1,7 +1,6 @@
-use nix::sys::socket::{self, MsgFlags, SockAddr, SockFlag, SockType};
+use nix::sys::socket::{self, MsgFlags, SockFlag, SockType, socket as nix_socket, UnixAddr, sendmsg, msghdr, IoVec, ControlMessage};
 use nix::unistd::close;
-use std::os::unix::io::RawFd;
-use std::path::Path;
+use std::os::unix::io::{IntoRawFd, RawFd};
 
 #[derive(Debug)]
 pub enum Error {
@@ -11,15 +10,41 @@ pub enum Error {
     Receive(nix::Error),
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::EnvVarNotFound(s) => write!(f, "Environment variable not found: {}", s),
+            Error::SocketConnect(e) => write!(f, "Socket connect error: {}", e),
+            Error::Send(e) => write!(f, "Socket send error: {}", e),
+            Error::Receive(e) => write!(f, "Socket receive error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::SocketConnect(e) => Some(e),
+            Error::Send(e) => Some(e),
+            Error::Receive(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 pub struct WaylandSocket {
     fd: RawFd,
 }
 
 impl WaylandSocket {
     pub fn connect(display_name: Option<&str>) -> Result<Self, Error> {
-        let display = display_name
-            .or_else(|| std::env::var("WAYLAND_DISPLAY").ok())
-            .unwrap_or_else(|| "wayland-0".to_string());
+        let display = if let Some(name) = display_name {
+            name.to_string()
+        } else if let Ok(env_display) = std::env::var("WAYLAND_DISPLAY") {
+            env_display
+        } else {
+            "wayland-0".to_string()
+        };
 
         let socket_path = if display.starts_with('/') {
             display
@@ -27,15 +52,16 @@ impl WaylandSocket {
             format!("/run/user/{}/{}", nix::unistd::getuid(), display)
         };
 
-        let fd = socket::socket(
+        let fd = nix_socket(
             socket::AddressFamily::Unix,
             SockType::Stream,
             SockFlag::empty(),
             None,
         )
-        .map_err(Error::SocketConnect)?;
+        .map_err(Error::SocketConnect)?
+        .into_raw_fd();
 
-        let sockaddr = SockAddr::new_unix(Path::new(&socket_path))
+        let sockaddr = UnixAddr::new(socket_path.as_str())
             .map_err(|_| Error::SocketConnect(nix::Error::EINVAL))?;
 
         socket::connect(fd, &sockaddr).map_err(Error::SocketConnect)?;
@@ -48,9 +74,23 @@ impl WaylandSocket {
         Ok(())
     }
 
+    pub fn send_with_fd(&self, message: &[u8], fd: RawFd) -> Result<(), Error> {
+        let iov = [IoVec::new(message)];
+        let fds = [fd];
+        let cmsg = ControlMessage::ScmRights(&fds);
+        let msg = msghdr::new(iov.as_slice(), &[], &[cmsg], MsgFlags::empty())
+            .map_err(Error::Send)?;
+        sendmsg(self.fd, &msg, MsgFlags::empty()).map_err(Error::Send)?;
+        Ok(())
+    }
+
     pub fn receive(&self, buffer: &mut [u8]) -> Result<usize, Error> {
         let bytes_read = socket::recv(self.fd, buffer, MsgFlags::empty()).map_err(Error::Receive)?;
         Ok(bytes_read)
+    }
+
+    pub fn raw_fd(&self) -> RawFd {
+        self.fd
     }
 }
 

@@ -15,6 +15,19 @@ pub enum Event {
         interface: String,
         version: u32,
     },
+    KeyboardKey {
+        serial: u32,
+        time: u32,
+        key: u32,
+        state: u32,
+    },
+    KeyboardModifiers {
+        serial: u32,
+        mods_depressed: u32,
+        mods_latched: u32,
+        mods_locked: u32,
+        group: u32,
+    },
 }
 
 impl Event {

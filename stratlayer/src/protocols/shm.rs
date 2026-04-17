@@ -1,5 +1,6 @@
 use crate::wire::protocol::{Argument, Message};
 use crate::wire::registry::ObjectRegistry;
+use crate::wire::socket::WaylandSocket;
 use std::os::unix::io::RawFd;
 
 pub struct WlShm {
@@ -11,7 +12,7 @@ impl WlShm {
         WlShm { id }
     }
 
-    pub fn create_pool(&self, fd: RawFd, size: i32, registry: &mut ObjectRegistry) -> u32 {
+    pub fn create_pool(&self, fd: RawFd, size: i32, registry: &mut ObjectRegistry, socket: &WaylandSocket) -> u32 {
         let pool_id = registry.allocate();
         let msg = Message::new(
             self.id,
@@ -22,7 +23,7 @@ impl WlShm {
                 Argument::Int(size),
             ],
         );
-        // Send message to socket would happen here
+        let _ = socket.send_with_fd(&msg.serialize(), fd);
         pool_id
     }
 }
@@ -44,6 +45,7 @@ impl WlShmPool {
         stride: i32,
         format: u32,
         registry: &mut ObjectRegistry,
+        socket: &WaylandSocket,
     ) -> u32 {
         let buffer_id = registry.allocate();
         let msg = Message::new(
@@ -58,12 +60,12 @@ impl WlShmPool {
                 Argument::Uint(format),
             ],
         );
-        // Send message to socket would happen here
+        let _ = socket.send(&msg.serialize());
         buffer_id
     }
 
     pub fn destroy(&self) {
-        let msg = Message::new(self.id, 1, vec![]); // destroy opcode
+        let _msg = Message::new(self.id, 1, vec![]); // destroy opcode
         // Send message to socket would happen here
     }
 }
@@ -78,7 +80,7 @@ impl WlBuffer {
     }
 
     pub fn destroy(&self) {
-        let msg = Message::new(self.id, 0, vec![]); // destroy opcode
+        let _msg = Message::new(self.id, 0, vec![]); // destroy opcode
         // Send message to socket would happen here
     }
 }

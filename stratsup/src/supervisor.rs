@@ -222,6 +222,20 @@ impl Supervisor {
         self.shutdown_requested
     }
 
+    pub fn execute_stratstop(&self) -> Result<(), String> {
+        use std::process::Command;
+        
+        let status = Command::new("/bin/stratstop")
+            .status()
+            .map_err(|err| format!("shutdown: failed to execute stratstop: {}", err))?;
+        
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("shutdown: stratstop exited with status: {}", status))
+        }
+    }
+
     fn select_target_slot(active_slot: u8, pinned_slot: Option<u8>) -> Result<SlotTarget, String> {
         if active_slot > SLOT_C {
             return Err(format!(

@@ -11,41 +11,41 @@
 - [x] Implement EFI variable read/write for slot selection
 
 ### Phase 3: Kernel Tuning & Handoff
-- [ ] Define minimal Kconfig for StratOS kernel
-- [ ] Implement bootloader-to-kernel parameter passing
-- [ ] Set up early serial console output
+- [x] Define minimal Kconfig for StratOS kernel
+- [x] Implement bootloader-to-kernel parameter passing
+- [x] Set up early serial console output
 
 ### Phase 4: Immutable Root (EROFS)
-- [ ] Implement system image mounting logic
-- [ ] Create `/system` mount as read-only EROFS
-- [ ] Setup initial ramdisk (initramfs) with custom init
+- [x] Implement system image mounting logic
+- [x] Create `/system` mount as read-only EROFS
+- [x] Setup initial ramdisk (initramfs) with custom init
 
 ### Phase 5: Honest Filesystem Layout
-- [ ] Implement separation of `/config`, `/cache`, and `/user`
-- [ ] Build the overlayfs or bind-mount logic for persistent configs
-- [ ] Script the creation of the system skeleton
+- [x] Implement separation of `/config`, `/cache`, and `/user`
+- [x] Build the overlayfs or bind-mount logic for persistent configs
+- [x] Script the creation of the system skeleton
 
 ### Phase 6: StratMon (Update Conductor)
-- [ ] Implement the Update manifest parser (Rust)
-- [ ] Build the FIEMAP extent mapping logic
-- [ ] Create the EFI variable writer for update requests
+- [x] Implement the Update manifest parser (Rust)
+- [x] Build the FIEMAP extent mapping logic
+- [x] Create the EFI variable writer for update requests
 
 ### Phase 7: Slot Write Logic (Surgeon)
-- [ ] Implement `EFI_BLOCK_IO_PROTOCOL` raw copy in StratBoot
-- [ ] Build the pre-boot hash verification engine
-- [ ] Implement slot rotation logic (A -> B transition)
+- [x] Implement `EFI_BLOCK_IO_PROTOCOL` raw copy in StratBoot
+- [x] Build the pre-boot hash verification engine
+- [x] Implement slot rotation logic (A -> B transition)
 
 ### Phase 8: StratSup (Supervisor)
-- [ ] Write custom PID 1 supervisor in Rust
-- [ ] Implement service spawning and monitoring
-- [ ] Create basic logging pipe for system services
+- [x] Write custom PID 1 supervisor in Rust
+- [x] Implement service spawning and monitoring
+- [x] Create basic logging pipe for system services
 
 ### Phase 9: Wayland Foundation
-- [ ] Implement custom Wayland protocol bindings
-- [ ] Build minimalist shared memory (shm) allocator
-- [ ] Create basic DRM/KMS backend for display output
+- [x] Implement custom Wayland protocol bindings
+- [x] Build minimalist shared memory (shm) allocator
+- [x] Create basic DRM/KMS backend for display output
 
-### Phase 10: Strat WM (Compositor)
+### Phase 10: stratvm (Compositor)
 - [ ] Implement tiling engine logic
 - [ ] Build custom GPU-accelerated rendering pipeline
 - [ ] Create input handling for keyboard and mouse (libinput wrapper)
@@ -112,5 +112,5 @@
 
 ### Phase 23: Cleanup & Hardening
 - [x] Target State Cleanup – APPROVED (deprecated legacy slot rotation, removed dead code paths)
-- [ ] Minimize EFI variable surface area
-- [ ] Introduce debug/build separation
+- [x] Minimize EFI variable surface area
+- [x] Introduce debug/build separation
