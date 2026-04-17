@@ -1,0 +1,5 @@
+name = "seatd"
+exec = "/bin/seatd"
+restart = "always"
+socket = "/run/seatd.sock"
+socket_timeout_ms = 5000

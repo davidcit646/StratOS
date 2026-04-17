@@ -1,0 +1,4 @@
+name = "validate-boot"
+exec = "/bin/strat-validate-boot"
+restart = "never"
+oneshot = true

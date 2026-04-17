@@ -721,7 +721,7 @@ static EFI_STATUS start_kernel_efi(EFI_HANDLE image, EFI_SYSTEM_TABLE *st,
     CHAR16 cmdline[512];
     // Use SPrint from gnu-efi (efilib.h) to build the string:
     SPrint(cmdline, sizeof(cmdline),
-           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s loglevel=0 console=none",
+           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s loglevel=0 console=tty0",
            root_device, initrd_path);
 
     EFI_LOADED_IMAGE *kernel_image = NULL;

@@ -1,0 +1,14 @@
+/home/dcitarelli/Projects/StratOS/stratman/target/release/deps/serde-667f15b9b894d404.d: /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/dcitarelli/Projects/StratOS/stratman/target/release/build/serde-f6cb84603e47992e/out/private.rs
+
+/home/dcitarelli/Projects/StratOS/stratman/target/release/deps/libserde-667f15b9b894d404.rlib: /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/dcitarelli/Projects/StratOS/stratman/target/release/build/serde-f6cb84603e47992e/out/private.rs
+
+/home/dcitarelli/Projects/StratOS/stratman/target/release/deps/libserde-667f15b9b894d404.rmeta: /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/dcitarelli/Projects/StratOS/stratman/target/release/build/serde-f6cb84603e47992e/out/private.rs
+
+/home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/home/dcitarelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/home/dcitarelli/Projects/StratOS/stratman/target/release/build/serde-f6cb84603e47992e/out/private.rs:
+
+# env-dep:OUT_DIR=/home/dcitarelli/Projects/StratOS/stratman/target/release/build/serde-f6cb84603e47992e/out

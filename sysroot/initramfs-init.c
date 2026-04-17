@@ -186,9 +186,9 @@ int main(void) {
         die_errno("chdir /");
     }
 
-    char *const argv[] = {"/sbin/init", NULL};
-    log_status("exec /sbin/init");
+    char *const argv[] = {"/bin/stratman", NULL};
+    log_status("exec /bin/stratman");
     execv(argv[0], argv);
-    die_errno("exec /sbin/init");
+    die_errno("exec /bin/stratman");
     return 1;
 }

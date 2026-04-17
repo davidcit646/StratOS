@@ -46,19 +46,25 @@
 - [x] Create basic DRM/KMS backend for display output
 
 ### Phase 10: stratvm (Compositor)
-- [ ] Implement tiling engine logic
-- [ ] Build custom GPU-accelerated rendering pipeline
-- [ ] Create input handling for keyboard and mouse (libinput wrapper)
+- [x] Implement tiling engine logic
+- [x] Build custom GPU-accelerated rendering pipeline
+- [x] Create input handling for keyboard and mouse (libinput wrapper)
 
 ### Phase 11: StratTerm (Terminal)
-- [ ] Implement custom PTY handling logic
-- [ ] Build custom GPU text renderer (no heavy font libs)
-- [ ] Implement VT100/Xterm escape sequence parser
+- [x] Implement custom PTY handling logic
+- [x] Build custom GPU text renderer (no heavy font libs)
+- [x] Implement VT100/Xterm escape sequence parser
 
 ### Phase 12: Spotlite (Search)
 - [ ] Implement local filesystem indexing engine
 - [ ] Build the instant-access UI overlay
 - [ ] Create the application launcher logic
+
+### Phase 12b: stratman (PID 1 Orchestrator)
+- [x] Implement stratman as PID 1 (replace stratsup)
+- [x] Build service spawning and lifecycle management
+- [ ] Implement maintenance window logic (idle detection + deferred updates)
+- [x] Wire stratman into initramfs handoff (switch_root into stratman)
 
 ### Phase 13: .strat Package Format
 - [ ] Define `.strat` file structure (compressed archive + manifest)

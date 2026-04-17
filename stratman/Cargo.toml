@@ -1,0 +1,11 @@
+[package]
+name = "stratman"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+libc = "0.2"
+toml = "0.8"
