@@ -264,7 +264,7 @@ EFI_STATUS strat_slot_append_update_history(EFI_RUNTIME_SERVICES *rt, UINT8 stat
     }
 
     UINT8 history[STRAT_UPDATE_HISTORY_SIZE];
-    EFI_STATUS efi_status = strat_efi_get_history(rt, history, STRAT_UPDATE_HISTORY_SIZE);
+    EFI_STATUS efi_status = strat_efi_get_bytes(rt, STRAT_EFI_VAR_NAME_UPDATE_HISTORY, history, STRAT_UPDATE_HISTORY_SIZE);
 
     if (efi_status != EFI_SUCCESS) {
         if (efi_status == EFI_NOT_FOUND) {
@@ -282,7 +282,7 @@ EFI_STATUS strat_slot_append_update_history(EFI_RUNTIME_SERVICES *rt, UINT8 stat
 
     history[STRAT_UPDATE_HISTORY_SIZE - 1] = status;
 
-    return strat_efi_set_history(rt, history, STRAT_UPDATE_HISTORY_SIZE);
+    return strat_efi_set_bytes(rt, STRAT_EFI_VAR_NAME_UPDATE_HISTORY, history, STRAT_UPDATE_HISTORY_SIZE, STRAT_EFI_VAR_ATTRS);
 }
 
 EFI_STATUS strat_slot_clear_update_request(EFI_RUNTIME_SERVICES *rt) {

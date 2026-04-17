@@ -85,21 +85,21 @@ apply_gpt_layout() {
     # Create new GPT
     phase1_run_cmd sgdisk -o "$IMAGE_PATH"
     
-    # ESP (EFI System Partition) - 512MiB, type EF00
-    phase1_run_cmd sgdisk -n 1:1MiB:+512MiB -t 1:EF00 -c 1:ESP "$IMAGE_PATH"
-    
-    # SLOT_A - 20GiB, type 8300 (Linux filesystem)
-    phase1_run_cmd sgdisk -n 2:0:+20GiB -t 2:8300 -c 2:SLOT_A "$IMAGE_PATH"
-    
-    # SLOT_B - 20GiB, type 8300
-    phase1_run_cmd sgdisk -n 3:0:+20GiB -t 3:8300 -c 3:SLOT_B "$IMAGE_PATH"
-    
-    # SLOT_C - 20GiB, type 8300
-    phase1_run_cmd sgdisk -n 4:0:+20GiB -t 4:8300 -c 4:SLOT_C "$IMAGE_PATH"
-    
-    # CONFIG - 4GiB, type 8300
-    phase1_run_cmd sgdisk -n 5:0:+4GiB -t 5:8300 -c 5:CONFIG "$IMAGE_PATH"
-    
+    # ESP (EFI System Partition) - 256MiB, type EF00
+    phase1_run_cmd sgdisk -n 1:1MiB:+256MiB -t 1:EF00 -c 1:ESP "$IMAGE_PATH"
+
+    # SLOT_A - 4GiB, type 8300 (Linux filesystem)
+    phase1_run_cmd sgdisk -n 2:0:+4GiB -t 2:8300 -c 2:SLOT_A "$IMAGE_PATH"
+
+    # SLOT_B - 4GiB, type 8300
+    phase1_run_cmd sgdisk -n 3:0:+4GiB -t 3:8300 -c 3:SLOT_B "$IMAGE_PATH"
+
+    # SLOT_C - 4GiB, type 8300
+    phase1_run_cmd sgdisk -n 4:0:+4GiB -t 4:8300 -c 4:SLOT_C "$IMAGE_PATH"
+
+    # CONFIG - 1GiB, type 8300
+    phase1_run_cmd sgdisk -n 5:0:+1GiB -t 5:8300 -c 5:CONFIG "$IMAGE_PATH"
+
     # HOME - Remaining space, type 8300
     phase1_run_cmd sgdisk -n 6:0:0 -t 6:8300 -c 6:HOME "$IMAGE_PATH"
 }
@@ -117,11 +117,11 @@ print_summary() {
     echo "Size: ${SIZE_GB}G"
     echo ""
     echo "Partition layout:"
-    echo "  1: ESP (512MiB) - EFI System Partition"
-    echo "  2: SLOT_A (20GiB) - System slot A"
-    echo "  3: SLOT_B (20GiB) - System slot B"
-    echo "  4: SLOT_C (20GiB) - System slot C"
-    echo "  5: CONFIG (4GiB) - Persistent configuration"
+    echo "  1: ESP (256MiB) - EFI System Partition"
+    echo "  2: SLOT_A (4GiB) - System slot A"
+    echo "  3: SLOT_B (4GiB) - System slot B"
+    echo "  4: SLOT_C (4GiB) - System slot C"
+    echo "  5: CONFIG (1GiB) - Persistent configuration"
     echo "  6: HOME (remaining) - User home directory"
 }
 
