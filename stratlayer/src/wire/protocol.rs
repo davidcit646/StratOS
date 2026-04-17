@@ -199,6 +199,14 @@ impl Argument {
                     let pad = (4 - (len % 4)) % 4;
                     offset += pad;
                 }
+                'f' => {
+                    if offset + 4 > data.len() { break; }
+                    let v = i32::from_le_bytes([
+                        data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                    ]);
+                    args.push(Argument::Fixed(v));
+                    offset += 4;
+                }
                 _ => {
                     offset += 4;
                 }

@@ -26,6 +26,11 @@ stratboot/efi/*.o
 # Rust build artifacts
 stratsup/target/
 stratvm/target/
+stratpanel/target/
+stratlayer/target/
+stratman/target/
+stratwm/target/
+stratmon/target/
 
 # Compiled binaries (reproducible from source)
 stratvm/stratwm

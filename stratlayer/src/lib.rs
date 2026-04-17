@@ -5,8 +5,9 @@ pub mod wire;
 
 pub use events::{Event, Interface};
 pub use protocols::{
-    WlBuffer, WlCompositor, WlDisplay, WlKeyboard, WlRegistry, WlSeat, WlShm, WlShmPool,
+    WlBuffer, WlCompositor, WlDisplay, WlKeyboard, WlPointer, WlRegistry, WlSeat, WlShm, WlShmPool,
     WlSurface, XdgSurface, XdgToplevel, XdgWmBase,
+    ZwlrLayerShellV1, ZwlrLayerSurfaceV1, LAYER_TOP, ANCHOR_TOP, ANCHOR_LEFT, ANCHOR_RIGHT,
 };
 pub use shm::{ShmBuffer, ShmPool};
 pub use wire::{Argument, Dispatcher, Message, MessageHeader, ObjectRegistry, WaylandSocket};
@@ -38,6 +39,10 @@ impl WaylandClient {
 
     pub fn registry(&mut self) -> &mut ObjectRegistry {
         &mut self.registry
+    }
+
+    pub fn register_layer_surface(&mut self, id: u32) {
+        self.registry.set_interface(id, Interface::ZwlrLayerSurfaceV1);
     }
 
     pub fn raw_fd(&self) -> std::os::unix::io::RawFd {

@@ -13,6 +13,7 @@ pub struct ServiceManifest {
     pub socket_timeout_ms: u64,
     pub env: Vec<(String, String)>,
     pub oneshot: bool,
+    pub namespace: NamespacePolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,23 @@ impl RestartPolicy {
             "always" => RestartPolicy::Always,
             "on-failure" => RestartPolicy::OnFailure,
             _ => RestartPolicy::Never,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespacePolicy {
+    None,
+    ReadonlyUser,
+    Strict,
+}
+
+impl NamespacePolicy {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "readonly-user" => Self::ReadonlyUser,
+            "strict" => Self::Strict,
+            _ => Self::None,
         }
     }
 }
@@ -62,8 +80,10 @@ fn parse_manifest(contents: &str) -> Result<ServiceManifest, String> {
             .collect())
         .unwrap_or_default();
     let oneshot = t.get("oneshot").and_then(|v| v.as_bool()).unwrap_or(false);
+    let namespace = t.get("namespace").and_then(|v| v.as_str())
+        .map(NamespacePolicy::from_str).unwrap_or(NamespacePolicy::None);
 
-    Ok(ServiceManifest { name, exec, args, restart, depends, socket, socket_timeout_ms, env, oneshot })
+    Ok(ServiceManifest { name, exec, args, restart, depends, socket, socket_timeout_ms, env, oneshot, namespace })
 }
 
 pub fn load_and_run_all() -> Result<(), String> {
@@ -117,26 +137,43 @@ pub fn load_and_run_all() -> Result<(), String> {
         services.insert(state.manifest.name.clone(), state);
     }
 
+    let mut monitor = crate::maint::IdleMonitor::init();
+
     // Main event loop
     loop {
         let mut status: libc::c_int = 0;
         let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
         
         if pid > 0 {
-            // Find service by pid
-            let mut service_name = None;
-            for (name, state) in &services {
-                if state.pid == Some(pid) {
-                    service_name = Some(name.clone());
-                    break;
+            // Maintenance task exit takes priority — check before service lookup
+            if monitor.current_task_pid == Some(pid) {
+                monitor.handle_task_exit(pid, status);
+            } else {
+                let mut service_name = None;
+                for (name, state) in &services {
+                    if state.pid == Some(pid) {
+                        service_name = Some(name.clone());
+                        break;
+                    }
+                }
+                if let Some(name) = service_name {
+                    if let Some(state) = services.get_mut(&name) {
+                        handle_service_exit(state, status)?;
+                    }
                 }
             }
-            
-            if let Some(name) = service_name {
-                if let Some(state) = services.get_mut(&name) {
-                    handle_service_exit(state, status)?;
-                }
+        }
+
+        // Maintenance window — only cancel if task is STILL running
+        monitor.check_activity();
+        monitor.update_idle_state();
+
+        if monitor.is_idle() && monitor.current_task_pid.is_none() {
+            if let Err(e) = monitor.maybe_start_task() {
+                eprintln!("stratman: {}", e);
             }
+        } else if !monitor.is_idle() && monitor.current_task_pid.is_some() {
+            monitor.cancel_current_task();
         }
         
         // Sleep 100ms between polls
@@ -218,6 +255,34 @@ fn topological_sort(manifests: &[ServiceManifest]) -> Result<Vec<ServiceManifest
     Ok(result)
 }
 
+fn apply_namespace_mounts(policy: NamespacePolicy) {
+    if policy == NamespacePolicy::None { return; }
+
+    if unsafe { libc::unshare(libc::CLONE_NEWNS) } < 0 {
+        eprintln!("stratman: unshare failed");
+        unsafe { libc::_exit(126); }
+    }
+
+    match policy {
+        NamespacePolicy::ReadonlyUser => {
+            for path in &[b"/config\0".as_ptr(), b"/home\0".as_ptr()] {
+                unsafe {
+                    libc::mount(*path as *const libc::c_char, *path as *const libc::c_char,
+                        core::ptr::null(), libc::MS_BIND, core::ptr::null());
+                    libc::mount(*path as *const libc::c_char, *path as *const libc::c_char,
+                        core::ptr::null(), libc::MS_BIND | libc::MS_RDONLY | libc::MS_REMOUNT, core::ptr::null());
+                }
+            }
+        }
+        NamespacePolicy::Strict => {
+            for path in &[b"/config\0".as_ptr(), b"/home\0".as_ptr()] {
+                unsafe { libc::umount2(*path as *const libc::c_char, libc::MNT_DETACH); }
+            }
+        }
+        NamespacePolicy::None => {}
+    }
+}
+
 fn spawn_service(manifest: ServiceManifest) -> Result<ServiceState, String> {
     let exec_cstr = std::ffi::CString::new(manifest.exec.clone())
         .map_err(|e| format!("Failed to create CString for exec: {}", e))?;
@@ -249,6 +314,8 @@ fn spawn_service(manifest: ServiceManifest) -> Result<ServiceState, String> {
         }
 
         if pid == 0 {
+            apply_namespace_mounts(manifest.namespace);
+
             // Set environment variables
             for env_ptr in &envp {
                 if !env_ptr.is_null() {

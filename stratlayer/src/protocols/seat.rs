@@ -39,3 +39,17 @@ impl WlKeyboard {
         self.id
     }
 }
+
+pub struct WlPointer {
+    id: u32,
+}
+
+impl WlPointer {
+    pub fn new(id: u32) -> Self {
+        WlPointer { id }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+}

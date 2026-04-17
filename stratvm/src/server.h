@@ -13,6 +13,7 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 
 /* Tiling engine data structures (Phase 8.2) */
 enum stratwm_split_direction {
@@ -42,6 +43,37 @@ struct stratwm_workspace {
     enum stratwm_layout_mode layout; /* BSP/Stack/Fullscreen (Phase 8.6) */
 };
 
+/* Layer shell (Phase 24a) */
+struct stratwm_layer_surface {
+    struct wl_list link;
+    struct stratwm_server *server;
+    struct wlr_layer_surface_v1 *layer_surface;
+    struct wlr_scene_tree *scene_tree;
+    struct wlr_scene_layer_surface_v1 *scene_layer_surface;
+    struct wl_listener map;
+    struct wl_listener unmap;
+    struct wl_listener destroy;
+    struct wl_listener new_popup;
+};
+
+/* IPC (Phase 24a) */
+#define IPC_MAX_CLIENTS 16
+#define IPC_BUF_SIZE 512
+
+struct stratwm_ipc_client {
+    int fd;
+    char buf[IPC_BUF_SIZE];
+    int buf_len;
+    struct wl_event_source *event_source;
+};
+
+struct stratwm_ipc {
+    int socket_fd;
+    struct wl_event_source *event_source;
+    struct stratwm_ipc_client clients[IPC_MAX_CLIENTS];
+    int client_count;
+};
+
 struct stratwm_server {
     struct wl_display *wl_display;
     struct wlr_backend *backend;
@@ -56,6 +88,12 @@ struct stratwm_server {
     struct wl_listener new_output;
     struct wl_listener new_xdg_toplevel;
     struct wl_listener new_input;
+
+    struct wlr_layer_shell_v1 *layer_shell;
+    struct wl_list layer_surfaces;
+    struct wl_listener new_layer_surface;
+    struct stratwm_ipc ipc;
+    bool panel_autohide;
 
     struct wlr_output_layout *output_layout;
     struct wlr_cursor *cursor;

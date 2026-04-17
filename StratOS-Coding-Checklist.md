@@ -63,8 +63,38 @@
 ### Phase 12b: stratman (PID 1 Orchestrator)
 - [x] Implement stratman as PID 1 (replace stratsup)
 - [x] Build service spawning and lifecycle management
-- [ ] Implement maintenance window logic (idle detection + deferred updates)
+- [x] Implement maintenance window logic (idle detection + deferred updates)
 - [x] Wire stratman into initramfs handoff (switch_root into stratman)
+- [x] Implement namespace guard
+
+### Phase 24a: Compositor Prerequisites (Panel & Settings)
+- [x] Add wlr_layer_shell_v1 support to stratvm compositor
+- [x] Implement IPC socket server in stratvm (/run/stratvm.sock) with command parser
+
+### Phase 24: Panel
+- [x] Implement panel binary (top bar, always-on-top Wayland layer surface)
+- [ ] Build pinned app launcher with scrollable strip
+- [ ] Build workspace switcher (click to switch, drag window to workspace)
+- [ ] Build system tray (clock, volume, network, battery, brightness, updates)
+- [ ] Implement auto-hide (slide up on mouse leave, slide down on top edge)
+- [ ] Wire panel IPC to stratvm socket (/run/stratvm.sock)
+- [x] Implement panel.conf TOML config reader (/config/strat/panel.conf)
+
+### Phase 25: Window Management
+- [x] Implement window decorations (titlebar, close/minimize/maximize buttons)
+- [ ] Build right-click titlebar context menu (float, remove titlebar, move to workspace)
+- [x] Implement per-window tiling/floating toggle
+- [ ] Build Cover Flow window switcher (Super+Tab, live textures, perspective transform)
+- [ ] Implement tabbed mode (Super+Shift+W, stacked windows with tab headers)
+- [ ] Implement configurable decoration rendering (corner radius, border width, button style/position)
+
+### Phase 26: Settings
+- [ ] Implement settings binary with search-first UI
+- [ ] Build display, sound, network, power, input, software, default apps, security, and about panels
+- [ ] Build appearance panel (theme, window decorations, fonts)
+- [ ] Build slots panel (view slot state, pin/unpin, manage updates)
+- [ ] Build recovery panel (reset CONFIG, schedule HOME wipe, factory reset)
+- [ ] Wire settings IPC to stratvm and stratman sockets
 
 ### Phase 13: .strat Package Format
 - [ ] Define `.strat` file structure (compressed archive + manifest)
@@ -104,17 +134,6 @@
 ### Phase 20: Final System Integration
 - [ ] Implement system-wide theme/asset manager
 - [ ] Build the first-boot setup wizard (Custom UI)
-- [ ] Create the final unified build-and-deploy pipeline
-
-### Phase 21: Update System Hardening
-- [ ] Implement StratMon update conductor (Rust)
-- [ ] Build FIEMAP extent mapping logic
-- [ ] Create EFI variable writer for update requests
-
-### Phase 22: Slot Write Logic Surgeon
-- [ ] Implement EFI_BLOCK_IO_PROTOCOL raw copy in StratBoot
-- [ ] Build pre-boot hash verification engine
-- [ ] Implement slot activation logic via strat_slot_process_update_request
 
 ### Phase 23: Cleanup & Hardening
 - [x] Target State Cleanup – APPROVED (deprecated legacy slot rotation, removed dead code paths)

@@ -199,6 +199,13 @@ impl IdleMonitor {
                 }
 
                 if pid == 0 {
+                    // Maintenance tasks always get strict isolation
+                    if libc::unshare(libc::CLONE_NEWNS) < 0 {
+                        eprintln!("stratman: unshare failed for maintenance task");
+                        libc::_exit(126);
+                    }
+                    libc::umount2(b"/config\0".as_ptr() as *const libc::c_char, libc::MNT_DETACH);
+                    libc::umount2(b"/home\0".as_ptr() as *const libc::c_char, libc::MNT_DETACH);
                     libc::execv(argv[0], argv.as_ptr());
                     libc::_exit(127);
                 }

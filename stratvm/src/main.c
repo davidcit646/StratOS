@@ -4,6 +4,8 @@
 #include <linux/input-event-codes.h>
 #include <spawn.h>
 #include <assert.h>
+#include <sys/un.h>
+#include <sys/socket.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +32,8 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_scene_layer_surface_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 
@@ -217,6 +221,19 @@ static void tile_free(struct stratwm_tile *tile) {
     if (tile->left) tile_free(tile->left);
     if (tile->right) tile_free(tile->right);
     free(tile);
+}
+
+static int get_top_exclusive_zone(struct stratwm_server *server) {
+    int zone = 0;
+    struct stratwm_layer_surface *layer;
+    wl_list_for_each(layer, &server->layer_surfaces, link) {
+        if (layer->layer_surface->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP) {
+            if (layer->layer_surface->current.exclusive_zone > zone) {
+                zone = layer->layer_surface->current.exclusive_zone;
+            }
+        }
+    }
+    return zone;
 }
 
 /*
@@ -676,6 +693,66 @@ static void destroy_titlebar(struct stratwm_view *view) {
     }
 }
 
+/* Layer shell handlers (Phase 24a) */
+static void layer_surface_map_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_layer_surface *layer = wl_container_of(listener, layer, map);
+    wlr_scene_node_set_enabled(&layer->scene_tree->node, true);
+    tile_reflow_scene(layer->server->workspaces[layer->server->current_workspace].root);
+}
+
+static void layer_surface_unmap_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_layer_surface *layer = wl_container_of(listener, layer, unmap);
+    wlr_scene_node_set_enabled(&layer->scene_tree->node, false);
+    tile_reflow_scene(layer->server->workspaces[layer->server->current_workspace].root);
+}
+
+static void layer_surface_destroy_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_layer_surface *layer = wl_container_of(listener, layer, destroy);
+    wl_list_remove(&layer->map.link);
+    wl_list_remove(&layer->unmap.link);
+    wl_list_remove(&layer->destroy.link);
+    wl_list_remove(&layer->new_popup.link);
+    wl_list_remove(&layer->link);
+    free(layer);
+}
+
+static void layer_surface_new_popup_notify(struct wl_listener *listener, void *data) {
+    /* popups handled by wlroots scene graph automatically */
+}
+
+static void server_new_layer_surface_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_server *server = wl_container_of(listener, server, new_layer_surface);
+    struct wlr_layer_surface_v1 *wlr_layer_surface = data;
+
+    struct stratwm_layer_surface *layer = calloc(1, sizeof(*layer));
+    if (!layer) return;
+
+    layer->server = server;
+    layer->layer_surface = wlr_layer_surface;
+
+    layer->scene_layer_surface = wlr_scene_layer_surface_v1_create(
+        &server->scene->tree, wlr_layer_surface);
+    if (!layer->scene_layer_surface) {
+        free(layer);
+        return;
+    }
+    layer->scene_tree = &layer->scene_layer_surface->tree;
+
+    layer->map.notify = layer_surface_map_notify;
+    wl_signal_add(&wlr_layer_surface->surface->events.map, &layer->map);
+
+    layer->unmap.notify = layer_surface_unmap_notify;
+    wl_signal_add(&wlr_layer_surface->surface->events.unmap, &layer->unmap);
+
+    layer->destroy.notify = layer_surface_destroy_notify;
+    wl_signal_add(&wlr_layer_surface->events.destroy, &layer->destroy);
+
+    layer->new_popup.notify = layer_surface_new_popup_notify;
+    wl_signal_add(&wlr_layer_surface->events.new_popup, &layer->new_popup);
+
+    wl_list_insert(&server->layer_surfaces, &layer->link);
+}
+
 static void output_frame_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_output *output = wl_container_of(listener, output, frame);
@@ -826,6 +903,9 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
                 output_box.width = 1920;
                 output_box.height = 1080;
             }
+            int zone = get_top_exclusive_zone(server);
+            output_box.y += zone;
+            output_box.height -= zone;
             ws->root = tile_new(output_box);
             if (!ws->root) {
 #ifdef DEBUG
@@ -1440,6 +1520,160 @@ static void server_new_input_notify(struct wl_listener *listener, void *data) {
     wlr_seat_set_capabilities(server->seat, caps);
 }
 
+/* IPC socket server (Phase 24a) */
+static void ipc_remove_client(struct stratwm_ipc *ipc, int idx) {
+    wl_event_source_remove(ipc->clients[idx].event_source);
+    close(ipc->clients[idx].fd);
+    ipc->clients[idx] = ipc->clients[ipc->client_count - 1];
+    ipc->client_count--;
+}
+
+static void ipc_send(int fd, const char *msg) {
+    write(fd, msg, strlen(msg));
+}
+
+static void ipc_dispatch_command(struct stratwm_server *server, const char *cmd, int fd) {
+    if (strcmp(cmd, "ping") == 0) {
+        ipc_send(fd, "OK pong\n");
+    } else if (strcmp(cmd, "get focused") == 0) {
+        struct stratwm_view *view = server->focused_view;
+        if (view && view->xdg_toplevel->base->client->pid > 0) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "OK %d\n", view->xdg_toplevel->base->client->pid);
+            ipc_send(fd, buf);
+        } else {
+            ipc_send(fd, "OK 0\n");
+        }
+    } else if (strcmp(cmd, "get workspaces") == 0) {
+        char buf[512] = "{\"workspaces\":[";
+        int first = 1;
+        for (int i = 0; i < 9; i++) {
+            char part[64];
+            int count = 0;
+            struct stratwm_view *v;
+            wl_list_for_each(v, &server->views, link) {
+                if (v->workspace_id == i) count++;
+            }
+            bool focused = (i == server->current_workspace);
+            if (first) {
+                snprintf(part, sizeof(part), "{\"id\":%d,\"name\":\"%d\",\"focused\":%s}",
+                    i + 1, i + 1, focused ? "true" : "false");
+                first = 0;
+            } else {
+                snprintf(part, sizeof(part), ",{\"id\":%d,\"name\":\"%d\",\"focused\":%s}",
+                    i + 1, i + 1, focused ? "true" : "false");
+            }
+            strncat(buf, part, sizeof(buf) - strlen(buf) - 1);
+        }
+        strncat(buf, "]}\n", sizeof(buf) - strlen(buf) - 1);
+        ipc_send(fd, buf);
+    } else if (strncmp(cmd, "float window ", 13) == 0) {
+        int pid = atoi(cmd + 13);
+        struct stratwm_view *v;
+        bool found = false;
+        wl_list_for_each(v, &server->views, link) {
+            if (v->xdg_toplevel->base->client->pid == pid) {
+                toggle_float(server, v);
+                ipc_send(fd, "OK\n");
+                found = true;
+                break;
+            }
+        }
+        if (!found) ipc_send(fd, "ERROR not found\n");
+    } else if (strncmp(cmd, "set panel autohide ", 19) == 0) {
+        server->panel_autohide = strcmp(cmd + 19, "true") == 0;
+        ipc_send(fd, "OK\n");
+    } else if (strncmp(cmd, "switch_workspace ", 16) == 0) {
+        int workspace_id = atoi(cmd + 16) - 1;  // Convert from 1-indexed to 0-indexed
+        if (workspace_id >= 0 && workspace_id < STRATWM_WORKSPACES) {
+            switch_workspace(server, workspace_id);
+            ipc_send(fd, "ok\n");
+        } else {
+            ipc_send(fd, "ERROR invalid workspace\n");
+        }
+    } else if (strcmp(cmd, "trigger_coverflow") == 0) {
+        ipc_send(fd, "OK\n"); // stub — Phase 25
+    } else if (strncmp(cmd, "trigger_pivot_overlay ", 22) == 0) {
+        ipc_send(fd, "OK\n"); // stub — future
+    } else {
+        ipc_send(fd, "ERROR unknown command\n");
+    }
+}
+
+static void ipc_read_client(struct stratwm_server *server, struct stratwm_ipc *ipc, int idx) {
+    struct stratwm_ipc_client *client = &ipc->clients[idx];
+    int n = read(client->fd, client->buf + client->buf_len,
+                 IPC_BUF_SIZE - client->buf_len - 1);
+    if (n <= 0) { ipc_remove_client(ipc, idx); return; }
+    client->buf_len += n;
+    client->buf[client->buf_len] = '\0';
+    char *newline;
+    while ((newline = strchr(client->buf, '\n')) != NULL) {
+        *newline = '\0';
+        ipc_dispatch_command(server, client->buf, client->fd);
+        int consumed = (newline - client->buf) + 1;
+        client->buf_len -= consumed;
+        memmove(client->buf, newline + 1, client->buf_len);
+        client->buf[client->buf_len] = '\0';
+    }
+}
+
+static void ipc_accept_client(struct stratwm_server *server) {
+    struct stratwm_ipc *ipc = &server->ipc;
+    if (ipc->client_count >= IPC_MAX_CLIENTS) return;
+    int fd = accept(ipc->socket_fd, NULL, NULL);
+    if (fd < 0) return;
+    struct stratwm_ipc_client *client = &ipc->clients[ipc->client_count];
+    client->fd = fd;
+    client->buf_len = 0;
+    client->event_source = wl_event_loop_add_fd(
+        wl_display_get_event_loop(server->wl_display),
+        fd, WL_EVENT_READABLE, ipc_handle_event, server);
+    ipc->client_count++;
+}
+
+static int ipc_handle_event(int fd, uint32_t mask, void *data) {
+    struct stratwm_server *server = data;
+    struct stratwm_ipc *ipc = &server->ipc;
+    if (fd == ipc->socket_fd) {
+        ipc_accept_client(server);
+    } else {
+        for (int i = 0; i < ipc->client_count; i++) {
+            if (ipc->clients[i].fd == fd) {
+                ipc_read_client(server, ipc, i);
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
+static void ipc_init(struct stratwm_server *server) {
+    struct stratwm_ipc *ipc = &server->ipc;
+    ipc->socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (ipc->socket_fd < 0) return;
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "/run/stratvm.sock", sizeof(addr.sun_path) - 1);
+    unlink("/run/stratvm.sock");
+    if (bind(ipc->socket_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) return;
+    listen(ipc->socket_fd, IPC_MAX_CLIENTS);
+    ipc->client_count = 0;
+    struct wl_event_loop *loop = wl_display_get_event_loop(server->wl_display);
+    ipc->event_source = wl_event_loop_add_fd(loop, ipc->socket_fd,
+        WL_EVENT_READABLE, ipc_handle_event, server);
+}
+
+static void ipc_finish(struct stratwm_ipc *ipc) {
+    for (int i = 0; i < ipc->client_count; i++) {
+        wl_event_source_remove(ipc->clients[i].event_source);
+        close(ipc->clients[i].fd);
+    }
+    wl_event_source_remove(ipc->event_source);
+    close(ipc->socket_fd);
+    unlink("/run/stratvm.sock");
+}
+
 int main(void) {
     wlr_log_init(WLR_ERROR, NULL);
 
@@ -1486,6 +1720,11 @@ int main(void) {
 
     wlr_compositor_create(server.wl_display, 5, server.renderer);
     wlr_subcompositor_create(server.wl_display);
+
+    server.layer_shell = wlr_layer_shell_v1_create(server.wl_display, 4);
+    wl_list_init(&server.layer_surfaces);
+    server.new_layer_surface.notify = server_new_layer_surface_notify;
+    wl_signal_add(&server.layer_shell->events.new_surface, &server.new_layer_surface);
     wlr_data_device_manager_create(server.wl_display);
     wlr_renderer_init_wl_display(server.renderer, server.wl_display);
 
@@ -1527,6 +1766,8 @@ int main(void) {
     }
     setenv("WAYLAND_DISPLAY", socket, 1);
 
+    ipc_init(&server);
+
     if (!wlr_backend_start(server.backend)) {
 #ifdef DEBUG
         fprintf(stderr, "stratwm: failed to start backend\n");
@@ -1548,6 +1789,8 @@ int main(void) {
     wl_list_remove(&server.cursor_button.link);
     wl_list_remove(&server.cursor_axis.link);
     wl_list_remove(&server.cursor_frame.link);
+
+    ipc_finish(&server.ipc);
 
     wl_display_destroy_clients(server.wl_display);
     wl_display_destroy(server.wl_display);

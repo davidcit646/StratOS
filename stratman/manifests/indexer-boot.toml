@@ -2,3 +2,4 @@ name = "indexer-boot"
 exec = "/bin/strat-indexer-boot.sh"
 restart = "never"
 oneshot = true
+namespace = "readonly-user"

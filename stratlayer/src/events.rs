@@ -16,6 +16,7 @@ pub enum Interface {
     XdgWmBase,
     XdgSurface,
     XdgToplevel,
+    ZwlrLayerSurfaceV1,
     Unknown,
 }
 
@@ -63,6 +64,17 @@ pub enum Event {
     },
     /// xdg_toplevel.close — compositor asked window to close
     XdgToplevelClose,
+    /// zwlr_layer_surface_v1.configure(serial, width, height)
+    LayerSurfaceConfigure {
+        object_id: u32,
+        serial: u32,
+        width: u32,
+        height: u32,
+    },
+    /// zwlr_layer_surface_v1.closed()
+    LayerSurfaceClosed {
+        object_id: u32,
+    },
     /// wl_keyboard.key(serial, time, key, state)
     KeyboardKey {
         serial: u32,
@@ -77,6 +89,21 @@ pub enum Event {
         mods_latched: u32,
         mods_locked: u32,
         group: u32,
+    },
+    /// wl_pointer.motion(time, surface_x, surface_y)
+    PointerMotion {
+        surface_x: f64,
+        surface_y: f64,
+    },
+    /// wl_pointer.enter(serial, surface, surface_x, surface_y)
+    PointerEnter {
+        surface_x: f64,
+        surface_y: f64,
+    },
+    /// wl_pointer.button(serial, time, button, state)
+    PointerButton {
+        button: u32,
+        state: u32,
     },
     /// wl_buffer.release — compositor done with buffer, client can reuse
     BufferRelease {
@@ -102,10 +129,15 @@ impl Event {
             (Interface::WlBuffer, 0) => "",       // release (no args)
             (Interface::WlKeyboard, 3) => "uuuu", // key
             (Interface::WlKeyboard, 4) => "uuuuu",// modifiers
+            (Interface::WlPointer, 0) => "uoff", // enter: serial, surface, surface_x, surface_y
+            (Interface::WlPointer, 2) => "uff", // motion: time, surface_x, surface_y
+            (Interface::WlPointer, 3) => "uuuu", // button: serial, time, button, state
             (Interface::XdgWmBase, 0) => "u",     // ping
             (Interface::XdgSurface, 0) => "u",    // configure
             (Interface::XdgToplevel, 0) => "iia", // configure
             (Interface::XdgToplevel, 1) => "",    // close
+            (Interface::ZwlrLayerSurfaceV1, 0) => "uuu", // configure: serial, width, height
+            (Interface::ZwlrLayerSurfaceV1, 1) => "",     // closed: no args
             _ => "",
         }
     }
@@ -205,6 +237,52 @@ impl Event {
                 } else { None }
             }
             (Interface::XdgToplevel, 1) => Some(Event::XdgToplevelClose),
+            (Interface::ZwlrLayerSurfaceV1, 0) => {
+                if args.len() < 3 { return None; }
+                if let (Argument::Uint(serial), Argument::Uint(w), Argument::Uint(h)) =
+                    (&args[0], &args[1], &args[2])
+                {
+                    Some(Event::LayerSurfaceConfigure {
+                        object_id: msg.header.sender_id,
+                        serial: *serial,
+                        width: *w,
+                        height: *h,
+                    })
+                } else { None }
+            }
+            (Interface::ZwlrLayerSurfaceV1, 1) => {
+                Some(Event::LayerSurfaceClosed { object_id: msg.header.sender_id })
+            }
+            (Interface::WlPointer, 2) => {
+                if args.len() < 3 { return None; }
+                if let (_, Argument::Fixed(fx), Argument::Fixed(fy)) =
+                    (&args[0], &args[1], &args[2])
+                {
+                    Some(Event::PointerMotion {
+                        surface_x: (*fx as f64) / 256.0,
+                        surface_y: (*fy as f64) / 256.0,
+                    })
+                } else { None }
+            }
+            (Interface::WlPointer, 0) => {
+                if args.len() < 4 { return None; }
+                if let (_, _, Argument::Fixed(fx), Argument::Fixed(fy)) =
+                    (&args[0], &args[1], &args[2], &args[3])
+                {
+                    Some(Event::PointerEnter {
+                        surface_x: (*fx as f64) / 256.0,
+                        surface_y: (*fy as f64) / 256.0,
+                    })
+                } else { None }
+            }
+            (Interface::WlPointer, 3) => {
+                if args.len() < 4 { return None; }
+                if let (_, _, Argument::Uint(button), Argument::Uint(state)) =
+                    (&args[0], &args[1], &args[2], &args[3])
+                {
+                    Some(Event::PointerButton { button: *button, state: *state })
+                } else { None }
+            }
             _ => None,
         }
     }
