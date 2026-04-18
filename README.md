@@ -104,6 +104,26 @@ make clean
 2.  **Run Phase 1:** `make phase1`
 3.  **Run in QEMU:** (Phase 2+ implementation)
 
+### Build + Run
+
+Use one script to build and run end-to-end:
+
+```bash
+./run.sh
+```
+
+`./run.sh` performs the full flow by default:
+- kernel build
+- StratBoot/initramfs/rootfs build
+- GPT test disk recreation + partition layout
+- slot/ESP update
+- QEMU boot
+
+Direct helpers (non-phase paths):
+- `scripts/create-test-disk.sh`
+- `scripts/update-test-disk.sh`
+- `scripts/run-qemu.sh`
+
 ---
 
 ## How to Contribute

@@ -10,11 +10,19 @@ EFI_STATUS strat_find_partition_by_name(
     EFI_BLOCK_IO **out_bio
 );
 
+EFI_STATUS strat_find_partition_by_name_ex(
+    EFI_SYSTEM_TABLE *st,
+    const CHAR16 *name,
+    EFI_HANDLE *out_handle,
+    EFI_BLOCK_IO **out_bio
+);
+
 EFI_STATUS strat_partition_zero_header(EFI_BLOCK_IO *bio, UINTN zero_megabytes);
 EFI_STATUS strat_partition_copy(EFI_BLOCK_IO *src_bio, EFI_BLOCK_IO *dst_bio);
 
 EFI_STATUS strat_partition_get_partuuid(
-    EFI_BLOCK_IO *bio,
+    EFI_SYSTEM_TABLE *st,
+    EFI_HANDLE handle,
     CHAR16 *out_partuuid,
     UINTN out_size
 );

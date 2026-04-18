@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,6 +113,89 @@ static void log_status(const char *msg) {
     }
 }
 
+static int equals_ignore_case(const char *a, const char *b) {
+    if (a == NULL || b == NULL) {
+        return 0;
+    }
+    while (*a != '\0' && *b != '\0') {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'a' && ca <= 'z') {
+            ca = (char)(ca - ('a' - 'A'));
+        }
+        if (cb >= 'a' && cb <= 'z') {
+            cb = (char)(cb - ('a' - 'A'));
+        }
+        if (ca != cb) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return (*a == '\0' && *b == '\0');
+}
+
+static int resolve_partuuid_device(const char *partuuid_spec, char *out, size_t out_len) {
+    if (partuuid_spec == NULL || out == NULL || out_len == 0) {
+        return -1;
+    }
+    const char *prefix = "PARTUUID=";
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(partuuid_spec, prefix, prefix_len) != 0) {
+        snprintf(out, out_len, "%s", partuuid_spec);
+        return 0;
+    }
+
+    const char *target = partuuid_spec + prefix_len;
+    DIR *dir = opendir("/sys/class/block");
+    if (dir == NULL) {
+        return -1;
+    }
+
+    struct dirent *entry = NULL;
+    char path[256];
+    char line[256];
+    char value[128];
+    int found = 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+
+        snprintf(path, sizeof(path), "/sys/class/block/%s/uevent", entry->d_name);
+        FILE *f = fopen(path, "r");
+        if (f == NULL) {
+            continue;
+        }
+
+        while (fgets(line, sizeof(line), f) != NULL) {
+            if (strncmp(line, "PARTUUID=", 9) != 0) {
+                continue;
+            }
+            snprintf(value, sizeof(value), "%s", line + 9);
+            size_t len = strlen(value);
+            while (len > 0 && (value[len - 1] == '\n' || value[len - 1] == '\r')) {
+                value[len - 1] = '\0';
+                len--;
+            }
+            if (equals_ignore_case(value, target)) {
+                snprintf(out, out_len, "/dev/%s", entry->d_name);
+                found = 1;
+                break;
+            }
+        }
+
+        fclose(f);
+        if (found) {
+            break;
+        }
+    }
+
+    closedir(dir);
+    return found ? 0 : -1;
+}
+
 int main(void) {
     log_status("start");
     ensure_dir("/proc");
@@ -124,6 +208,7 @@ int main(void) {
     ensure_dir("/var");
     ensure_dir("/run");
     ensure_dir("/usr");
+    ensure_dir("/etc");
 
     mount_or_die("proc", "/proc", "proc", 0, NULL, "mount /proc");
     log_status("mounted /proc");
@@ -134,8 +219,18 @@ int main(void) {
     log_status("mounted /dev");
 
     char root_dev[128];
+    char root_dev_resolved[128];
     read_root_device(root_dev, sizeof(root_dev));
-    mount_or_die(root_dev, "/system", "erofs", MS_RDONLY, NULL, "mount /system");
+    if (resolve_partuuid_device(root_dev, root_dev_resolved, sizeof(root_dev_resolved)) != 0) {
+        if (strncmp(root_dev, "PARTUUID=", 9) == 0 && access("/dev/sda2", F_OK) == 0) {
+            snprintf(root_dev_resolved, sizeof(root_dev_resolved), "/dev/sda2");
+            fprintf(stderr, "init: PARTUUID unresolved, falling back to %s\n", root_dev_resolved);
+        } else {
+            fprintf(stderr, "init: resolve root device failed: %s\n", root_dev);
+            wait_forever();
+        }
+    }
+    mount_or_die(root_dev_resolved, "/system", "erofs", MS_RDONLY, NULL, "mount /system");
     log_status("mounted /system");
 
     char config_dev[128];

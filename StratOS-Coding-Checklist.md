@@ -72,7 +72,7 @@
 - [x] Implement IPC socket server in stratvm (/run/stratvm.sock) with command parser
 
 ### Phase 24: Panel
-- [x] Implement panel binary (top bar, always-on-top Wayland layer surface)
+- [~] Implement panel binary (top bar, always-on-top Wayland layer surface) — panel renders but is occluded by focused windows; see Phase 25 stacking fix
 - [ ] Build pinned app launcher with scrollable strip
 - [x] Build workspace switcher (click to switch, drag window to workspace)
 - [ ] Build system tray (clock, volume, network, battery, brightness, updates)
@@ -82,6 +82,8 @@
 
 ### Phase 25: Window Management
 - [x] Implement window decorations (titlebar, close/minimize/maximize buttons)
+- [ ] Implement interactive window move (titlebar drag + xdg_toplevel request_move handler; floating-view grab state machine in stratvm)
+- [ ] Fix layer-shell stacking (separate wlr_scene_tree per layer — background/bottom/normal/top/overlay — so raise_to_top on focused xdg views cannot cover the LAYER_TOP panel)
 - [ ] Build right-click titlebar context menu (float, remove titlebar, move to workspace)
 - [x] Implement per-window tiling/floating toggle
 - [ ] Build Cover Flow window switcher (Super+Tab, live textures, perspective transform)

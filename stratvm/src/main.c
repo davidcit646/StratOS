@@ -76,6 +76,7 @@ struct stratwm_view {
     struct wl_listener unmap;
     struct wl_listener commit;
     struct wl_listener destroy;
+    struct wl_listener request_move;
 };
 
 struct stratwm_keyboard {
@@ -129,11 +130,14 @@ static void spawn_terminal(void) {
     }
     if (pid == 0) {
         setsid();
-        /* Try direct first, then flatpak-spawn for immutable OS hosts */
-        execl("/usr/bin/foot", "foot", (char *)NULL);
+        /* StratOS terminal first, then generic host fallbacks */
+        execl("/bin/stratterm", "stratterm", (char *)NULL);
+        execl("/usr/bin/stratterm", "stratterm", (char *)NULL);
         execl("/usr/bin/alacritty", "alacritty", (char *)NULL);
         execl("/usr/bin/xterm", "xterm", (char *)NULL);
-        execl("/usr/bin/flatpak-spawn", "flatpak-spawn", "--host", "foot", (char *)NULL);
+        execl("/usr/bin/flatpak-spawn", "flatpak-spawn", "--host", "stratterm", (char *)NULL);
+        execl("/usr/bin/flatpak-spawn", "flatpak-spawn", "--host", "alacritty", (char *)NULL);
+        execl("/usr/bin/flatpak-spawn", "flatpak-spawn", "--host", "xterm", (char *)NULL);
 #ifdef DEBUG
         fprintf(stderr, "stratwm: no terminal found\n");
 #endif
@@ -141,7 +145,7 @@ static void spawn_terminal(void) {
     }
 }
 
-static void spawn_autostart(const char *path) {
+static void spawn_autostart(const char *path, const char *wayland_display) {
     if (access(path, X_OK) != 0) {
         fprintf(stderr, "stratwm: autostart missing or not executable: %s\n", path);
         return;
@@ -152,7 +156,9 @@ static void spawn_autostart(const char *path) {
         return;
     }
     if (pid == 0) {
-        setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+        if (wayland_display != NULL && wayland_display[0] != '\0') {
+            setenv("WAYLAND_DISPLAY", wayland_display, 1);
+        }
         setenv("XDG_RUNTIME_DIR", "/run", 1);
         setenv("PATH", "/bin:/usr/bin:/sbin:/usr/sbin", 1);
         setenv("SHELL", "/bin/sh", 1);
@@ -744,6 +750,31 @@ static void layer_surface_configure(struct stratwm_layer_surface *layer) {
 static void layer_surface_commit_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, commit);
+    
+    /* Check if layer has changed and reparent if needed */
+    if (layer->layer_surface->current.layer != layer->previous_layer) {
+        struct wlr_scene_tree *new_layer_tree;
+        switch (layer->layer_surface->current.layer) {
+            case ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND:
+                new_layer_tree = layer->server->layers_bg;
+                break;
+            case ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM:
+                new_layer_tree = layer->server->layers_bottom;
+                break;
+            case ZWLR_LAYER_SHELL_V1_LAYER_TOP:
+                new_layer_tree = layer->server->layers_top;
+                break;
+            case ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY:
+                new_layer_tree = layer->server->layers_overlay;
+                break;
+            default:
+                new_layer_tree = layer->server->layers_bottom;
+                break;
+        }
+        wlr_scene_node_reparent(&layer->scene_tree->node, new_layer_tree);
+        layer->previous_layer = layer->layer_surface->current.layer;
+    }
+    
     layer_surface_configure(layer);
 }
 
@@ -799,9 +830,30 @@ static void server_new_layer_surface_notify(struct wl_listener *listener, void *
 
     layer->server = server;
     layer->layer_surface = wlr_layer_surface;
+    layer->previous_layer = wlr_layer_surface->pending.layer;
+
+    /* Parent to the appropriate layer tree based on pending.layer */
+    struct wlr_scene_tree *layer_tree;
+    switch (wlr_layer_surface->pending.layer) {
+        case ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND:
+            layer_tree = server->layers_bg;
+            break;
+        case ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM:
+            layer_tree = server->layers_bottom;
+            break;
+        case ZWLR_LAYER_SHELL_V1_LAYER_TOP:
+            layer_tree = server->layers_top;
+            break;
+        case ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY:
+            layer_tree = server->layers_overlay;
+            break;
+        default:
+            layer_tree = server->layers_bottom;
+            break;
+    }
 
     layer->scene_layer_surface = wlr_scene_layer_surface_v1_create(
-        &server->scene->tree, wlr_layer_surface);
+        layer_tree, wlr_layer_surface);
     if (!layer->scene_layer_surface) {
         free(layer);
         return;
@@ -1060,6 +1112,26 @@ static void view_unmap_notify(struct wl_listener *listener, void *data) {
     }
 }
 
+static void view_request_move_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_view *view = wl_container_of(listener, view, request_move);
+    struct stratwm_server *server = view->server;
+    struct wlr_xdg_toplevel_move_event *event = data;
+    
+    /* Only allow move for floating windows or when initiated via titlebar */
+    if (!view->is_floating) {
+        /* Temporarily set floating mode for interactive move */
+        view->is_floating = true;
+        view->float_x = view->scene_tree->node.x;
+        view->float_y = view->scene_tree->node.y;
+    }
+    
+    server->grabbed_view = view;
+    server->grab_x = server->cursor->x;
+    server->grab_y = server->cursor->y;
+    server->grab_view_x = view->float_x;
+    server->grab_view_y = view->float_y;
+}
+
 static void view_destroy_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_view *view = wl_container_of(listener, view, destroy);
@@ -1079,6 +1151,7 @@ static void view_destroy_notify(struct wl_listener *listener, void *data) {
     wl_list_remove(&view->unmap.link);
     wl_list_remove(&view->commit.link);
     wl_list_remove(&view->destroy.link);
+    wl_list_remove(&view->request_move.link);
     wl_list_remove(&view->link);
     free(view);
 }
@@ -1098,7 +1171,7 @@ static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *d
     view->server = server;
     view->xdg_toplevel = xdg_toplevel;
     view->workspace_id = server->current_workspace;  /* Assign to current workspace */
-    view->scene_tree = wlr_scene_xdg_surface_create(&server->scene->tree,
+    view->scene_tree = wlr_scene_xdg_surface_create(server->layers_normal,
         xdg_toplevel->base);
 
     if (view->scene_tree == NULL) {
@@ -1117,6 +1190,8 @@ static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *d
     wl_signal_add(&xdg_toplevel->base->surface->events.commit, &view->commit);
     view->destroy.notify = view_destroy_notify;
     wl_signal_add(&xdg_toplevel->events.destroy, &view->destroy);
+    view->request_move.notify = view_request_move_notify;
+    wl_signal_add(&xdg_toplevel->events.request_move, &view->request_move);
 
     wl_list_insert(&server->views, &view->link);
 }
@@ -1476,6 +1551,17 @@ static void cursor_motion_notify(struct wl_listener *listener, void *data) {
     struct wlr_pointer_motion_event *event = data;
 
     wlr_cursor_move(server->cursor, NULL, event->delta_x, event->delta_y);
+
+    /* Handle window drag */
+    if (server->grabbed_view) {
+        int dx = server->cursor->x - server->grab_x;
+        int dy = server->cursor->y - server->grab_y;
+        server->grabbed_view->float_x = server->grab_view_x + dx;
+        server->grabbed_view->float_y = server->grab_view_y + dy;
+        wlr_scene_node_set_position(&server->grabbed_view->scene_tree->node,
+            server->grabbed_view->float_x, server->grabbed_view->float_y);
+    }
+
     wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
         server->cursor->x, server->cursor->y);
 }
@@ -1492,6 +1578,14 @@ static void cursor_motion_absolute_notify(struct wl_listener *listener, void *da
 static void cursor_button_notify(struct wl_listener *listener, void *data) {
     struct stratwm_server *server = wl_container_of(listener, server, cursor_button);
     struct wlr_pointer_button_event *event = data;
+
+    /* Handle grab release */
+    if (event->state == WL_POINTER_BUTTON_STATE_RELEASED && server->grabbed_view) {
+        server->grabbed_view = NULL;
+        wlr_seat_pointer_notify_button(server->seat, event->time_msec,
+            event->button, event->state);
+        return;
+    }
 
     /* Check for titlebar button clicks (Phase 8.8) */
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && server->focused_view) {
@@ -1517,6 +1611,23 @@ static void cursor_button_notify(struct wl_listener *listener, void *data) {
         if (point_in_titlebar_button(view->min_button, view_x, view_y)) {
             /* For now, just close on minimize (can be improved later) */
             wlr_xdg_toplevel_send_close(view->xdg_toplevel);
+            return;
+        }
+
+        /* Check if click is on titlebar (not on buttons) */
+        if (view->titlebar_bg && view_x >= 0 && view_x < view->xdg_toplevel->current.width &&
+            view_y >= -24 && view_y < 0) {
+            /* Start titlebar drag */
+            if (!view->is_floating) {
+                view->is_floating = true;
+                view->float_x = view->scene_tree->node.x;
+                view->float_y = view->scene_tree->node.y;
+            }
+            server->grabbed_view = view;
+            server->grab_x = cursor_x;
+            server->grab_y = cursor_y;
+            server->grab_view_x = view->float_x;
+            server->grab_view_y = view->float_y;
             return;
         }
     }
@@ -1823,6 +1934,14 @@ int main(void) {
     server.output_layout = wlr_output_layout_create(server.wl_display);
     server.scene = wlr_scene_create();
     server.scene_layout = wlr_scene_attach_output_layout(server.scene, server.output_layout);
+    
+    /* Create layer trees for proper layer-shell stacking */
+    server.layers_bg = wlr_scene_tree_create(&server.scene->tree);
+    server.layers_bottom = wlr_scene_tree_create(&server.scene->tree);
+    server.layers_normal = wlr_scene_tree_create(&server.scene->tree);
+    server.layers_top = wlr_scene_tree_create(&server.scene->tree);
+    server.layers_overlay = wlr_scene_tree_create(&server.scene->tree);
+    
     server.xdg_shell = wlr_xdg_shell_create(server.wl_display, 6);
     server.seat = wlr_seat_create(server.wl_display, "seat0");
 
@@ -1891,8 +2010,8 @@ int main(void) {
 #ifdef DEBUG
     fprintf(stderr, "stratwm: started (%s)\n", socket);
 #endif
-    spawn_autostart("/bin/foot");
-    spawn_autostart("/bin/stratpanel");
+    spawn_autostart("/bin/stratterm", socket);
+    spawn_autostart("/bin/stratpanel", socket);
     wl_display_run(server.wl_display);
 
     wl_list_remove(&server.new_xdg_toplevel.link);

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Color {
     Default,
@@ -40,6 +42,9 @@ pub struct ScreenBuffer {
     pub current_bg: Color,
     pub current_bold: bool,
     pub current_underline: bool,
+    pub scrollback: VecDeque<Vec<Cell>>,
+    pub scrollback_max: usize,
+    pub scrollback_offset: usize,
 }
 
 impl ScreenBuffer {
@@ -57,6 +62,9 @@ impl ScreenBuffer {
             current_bg: Color::Default,
             current_bold: false,
             current_underline: false,
+            scrollback: VecDeque::new(),
+            scrollback_max: 10_000,
+            scrollback_offset: 0,
         }
     }
 
@@ -85,6 +93,9 @@ impl ScreenBuffer {
         if self.cursor_col >= new_cols {
             self.cursor_col = new_cols.saturating_sub(1);
         }
+        self.scrollback_offset = self
+            .scrollback_offset
+            .min(self.scrollback.len().saturating_add(self.rows).saturating_sub(self.rows));
     }
 
     pub fn clear(&mut self) {
@@ -138,6 +149,13 @@ impl ScreenBuffer {
         let scroll_range = scroll_end - scroll_start;
         let actual_count = count.min(scroll_range);
         
+        for i in 0..actual_count {
+            let source_row = scroll_start + i;
+            if source_row < self.rows {
+                self.push_scrollback_line(self.cells[source_row].clone());
+            }
+        }
+
         for i in scroll_start..=(scroll_end - actual_count) {
             if i + actual_count < self.rows {
                 self.cells[i] = self.cells[i + actual_count].clone();
@@ -153,6 +171,62 @@ impl ScreenBuffer {
         }
     }
 
+    fn push_scrollback_line(&mut self, line: Vec<Cell>) {
+        self.scrollback.push_back(line);
+        while self.scrollback.len() > self.scrollback_max {
+            let _ = self.scrollback.pop_front();
+        }
+    }
+
+    pub fn set_scrollback_max(&mut self, max_lines: usize) {
+        self.scrollback_max = max_lines.max(1);
+        while self.scrollback.len() > self.scrollback_max {
+            let _ = self.scrollback.pop_front();
+        }
+        self.scrollback_offset = self.scrollback_offset.min(self.scrollback.len());
+    }
+
+    pub fn scrollback_page_up(&mut self, lines: usize) {
+        let max_offset = self.scrollback.len();
+        self.scrollback_offset = (self.scrollback_offset + lines).min(max_offset);
+    }
+
+    pub fn scrollback_page_down(&mut self, lines: usize) {
+        self.scrollback_offset = self.scrollback_offset.saturating_sub(lines);
+    }
+
+    pub fn reset_scrollback(&mut self) {
+        self.scrollback_offset = 0;
+    }
+
+    pub fn is_scrollback_active(&self) -> bool {
+        self.scrollback_offset > 0
+    }
+
+    pub fn display_cell(&self, row: usize, col: usize) -> Cell {
+        if row >= self.rows || col >= self.cols {
+            return Cell::default();
+        }
+
+        let history_len = self.scrollback.len();
+        let total_lines = history_len + self.rows;
+        let window_start = total_lines.saturating_sub(self.rows + self.scrollback_offset);
+        let global_row = window_start + row;
+
+        if global_row < history_len {
+            self.scrollback
+                .get(global_row)
+                .and_then(|line| line.get(col).copied())
+                .unwrap_or_default()
+        } else {
+            let screen_row = global_row.saturating_sub(history_len);
+            self.cells
+                .get(screen_row)
+                .and_then(|line| line.get(col).copied())
+                .unwrap_or_default()
+        }
+    }
+
     pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
         self.scroll_top = top.min(self.rows.saturating_sub(1));
         self.scroll_bottom = bottom.min(self.rows.saturating_sub(1));
@@ -163,6 +237,14 @@ impl ScreenBuffer {
 
     pub fn set_color(&mut self, fg: Color, bg: Color) {
         self.current_fg = fg;
+        self.current_bg = bg;
+    }
+
+    pub fn set_foreground(&mut self, fg: Color) {
+        self.current_fg = fg;
+    }
+
+    pub fn set_background(&mut self, bg: Color) {
         self.current_bg = bg;
     }
 

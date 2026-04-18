@@ -7,7 +7,16 @@ edition = "2021"
 stratlayer = { path = "../stratlayer" }
 nix = { version = "0.29", features = ["mman", "fs", "socket", "user", "term", "process", "poll"] }
 libc = "0.2"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [[bin]]
 name = "stratterm"
 path = "src/main.rs"
+
+[[bin]]
+name = "stratterm-indexer"
+path = "src/bin/stratterm-indexer.rs"
+
+[[bin]]
+name = "strat-settings"
+path = "src/bin/strat-settings.rs"

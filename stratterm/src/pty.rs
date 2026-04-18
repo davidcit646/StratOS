@@ -83,6 +83,10 @@ impl Pty {
         self.master_fd
     }
 
+    pub fn child_pid(&self) -> i32 {
+        self.child_pid.as_raw()
+    }
+
     pub fn wait(&self) -> Result<WaitStatus, String> {
         waitpid(self.child_pid, None)
             .map_err(|e| format!("waitpid failed: {}", e))

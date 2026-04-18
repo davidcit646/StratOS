@@ -50,6 +50,7 @@ struct stratwm_layer_surface {
     struct wlr_layer_surface_v1 *layer_surface;
     struct wlr_scene_tree *scene_tree;
     struct wlr_scene_layer_surface_v1 *scene_layer_surface;
+    uint32_t previous_layer;  /* Track layer changes for reparenting */
     struct wl_listener map;
     struct wl_listener unmap;
     struct wl_listener commit;
@@ -114,6 +115,18 @@ struct stratwm_server {
     struct stratwm_workspace workspaces[STRATWM_WORKSPACES];
     int current_workspace;
     struct stratwm_view *focused_view;
+
+    /* Layer-shell stacking (Phase 24a) */
+    struct wlr_scene_tree *layers_bg;
+    struct wlr_scene_tree *layers_bottom;
+    struct wlr_scene_tree *layers_normal;
+    struct wlr_scene_tree *layers_top;
+    struct wlr_scene_tree *layers_overlay;
+
+    /* Interactive window move (titlebar drag) */
+    struct stratwm_view *grabbed_view;
+    int grab_x, grab_y;  /* Initial cursor position */
+    int grab_view_x, grab_view_y;  /* Initial view position */
 };
 
 #endif

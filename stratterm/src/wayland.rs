@@ -222,6 +222,11 @@ impl WaylandWindow {
         (self.width, self.height)
     }
 
+    pub fn set_title(&mut self, title: &str) {
+        XdgToplevel::new(self.xdg_toplevel_id).set_title(title, self.client.socket());
+        WlSurface::new(self.surface_id).commit(self.client.socket());
+    }
+
     #[allow(dead_code)]
     pub fn is_configured(&self) -> bool {
         self.configured

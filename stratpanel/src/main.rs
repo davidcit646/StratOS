@@ -350,10 +350,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let clock_text = clock.text();
             if clock_text != last_clock_text {
                 last_clock_text = clock_text.to_string();
-                needs_commit = true; // Clock changed
             }
             last_workspace_fetch = Instant::now();
-            needs_commit = true; // Workspace buttons changed
+            needs_commit = true; // Clock or workspace state changed
         }
 
         // Blink cursor

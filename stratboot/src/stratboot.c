@@ -659,6 +659,432 @@ static const CHAR16 *slot_name(StratSlotId slot) {
 
 static CHAR16 slot_root_partuuid[3][37];
 
+static BOOLEAN gpt_header_valid(const UINT8 *hdr, UINTN size) {
+    if (hdr == NULL || size < 8) {
+        return FALSE;
+    }
+    return (CompareMem(hdr, "EFI PART", 8) == 0);
+}
+
+static BOOLEAN gpt_entry_name_equals(const UINT8 *entry, const CHAR16 *partition_name) {
+    if (entry == NULL || partition_name == NULL) {
+        return FALSE;
+    }
+
+    CHAR16 name_field[37];
+    const CHAR16 *raw = (const CHAR16 *)(entry + 56);
+    for (UINTN i = 0; i < 36; i++) {
+        name_field[i] = raw[i];
+    }
+    name_field[36] = L'\0';
+
+    return (StrCmp(name_field, (CHAR16 *)partition_name) == 0);
+}
+
+static UINT32 read_le32(const UINT8 *ptr) {
+    return (UINT32)ptr[0]
+         | ((UINT32)ptr[1] << 8)
+         | ((UINT32)ptr[2] << 16)
+         | ((UINT32)ptr[3] << 24);
+}
+
+static UINT64 read_le64(const UINT8 *ptr) {
+    return (UINT64)read_le32(ptr)
+         | ((UINT64)read_le32(ptr + 4) << 32);
+}
+
+static __attribute__((unused)) EFI_STATUS find_disk_block_io_from_loaded_image(
+    EFI_SYSTEM_TABLE *st,
+    EFI_HANDLE image,
+    EFI_BLOCK_IO **out_disk_bio
+) {
+    if (st == NULL || st->BootServices == NULL || image == NULL || out_disk_bio == NULL) {
+        return EFI_INVALID_PARAMETER;
+    }
+    *out_disk_bio = NULL;
+
+    EFI_LOADED_IMAGE *loaded = NULL;
+    EFI_STATUS status = uefi_call_wrapper(
+        st->BootServices->HandleProtocol,
+        3,
+        image,
+        &LoadedImageProtocol,
+        (VOID **)&loaded
+    );
+    if (status != EFI_SUCCESS || loaded == NULL) {
+        return (status != EFI_SUCCESS) ? status : EFI_NOT_FOUND;
+    }
+
+    EFI_DEVICE_PATH *dp = NULL;
+    status = uefi_call_wrapper(
+        st->BootServices->HandleProtocol,
+        3,
+        loaded->DeviceHandle,
+        &DevicePathProtocol,
+        (VOID **)&dp
+    );
+    if (status != EFI_SUCCESS || dp == NULL) {
+        return (status != EFI_SUCCESS) ? status : EFI_NOT_FOUND;
+    }
+
+    EFI_DEVICE_PATH_PROTOCOL *node = (EFI_DEVICE_PATH_PROTOCOL *)dp;
+    while (!IsDevicePathEnd(node)) {
+        if (DevicePathType(node) == MEDIA_DEVICE_PATH && DevicePathSubType(node) == MEDIA_HARDDRIVE_DP) {
+            UINTN prefix_len = (UINTN)((UINT8 *)node - (UINT8 *)dp);
+            if (prefix_len < sizeof(EFI_DEVICE_PATH_PROTOCOL)) {
+                return EFI_NOT_FOUND;
+            }
+
+            EFI_HANDLE *handles = NULL;
+            UINTN handle_count = 0;
+            status = uefi_call_wrapper(
+                st->BootServices->LocateHandleBuffer,
+                5,
+                ByProtocol,
+                &BlockIoProtocol,
+                NULL,
+                &handle_count,
+                &handles
+            );
+            if (status != EFI_SUCCESS) {
+                return status;
+            }
+
+            EFI_BLOCK_IO *disk_bio = NULL;
+            for (UINTN i = 0; i < handle_count; i++) {
+                EFI_BLOCK_IO *bio = NULL;
+                EFI_STATUS bio_status = uefi_call_wrapper(
+                    st->BootServices->HandleProtocol,
+                    3,
+                    handles[i],
+                    &BlockIoProtocol,
+                    (VOID **)&bio
+                );
+                if (bio_status != EFI_SUCCESS || bio == NULL || bio->Media == NULL) {
+                    continue;
+                }
+                if (bio->Media->LogicalPartition) {
+                    continue;
+                }
+
+                EFI_DEVICE_PATH *cand_dp = NULL;
+                EFI_STATUS dp_status = uefi_call_wrapper(
+                    st->BootServices->HandleProtocol,
+                    3,
+                    handles[i],
+                    &DevicePathProtocol,
+                    (VOID **)&cand_dp
+                );
+                if (dp_status != EFI_SUCCESS || cand_dp == NULL) {
+                    continue;
+                }
+
+                if (CompareMem(cand_dp, dp, prefix_len) == 0) {
+                    disk_bio = bio;
+                    break;
+                }
+            }
+
+            if (handles != NULL) {
+                uefi_call_wrapper(st->BootServices->FreePool, 1, handles);
+            }
+            if (disk_bio == NULL) {
+                // Fallback: pick the first whole-disk BlockIo that looks like GPT.
+                EFI_HANDLE *all_handles = NULL;
+                UINTN all_count = 0;
+                EFI_STATUS list_status = uefi_call_wrapper(
+                    st->BootServices->LocateHandleBuffer,
+                    5,
+                    ByProtocol,
+                    &BlockIoProtocol,
+                    NULL,
+                    &all_count,
+                    &all_handles
+                );
+                if (list_status != EFI_SUCCESS) {
+                    return list_status;
+                }
+
+                EFI_BLOCK_IO *candidate_disk = NULL;
+                for (UINTN i = 0; i < all_count; i++) {
+                    EFI_BLOCK_IO *bio = NULL;
+                    EFI_STATUS bio_status = uefi_call_wrapper(
+                        st->BootServices->HandleProtocol,
+                        3,
+                        all_handles[i],
+                        &BlockIoProtocol,
+                        (VOID **)&bio
+                    );
+                    if (bio_status != EFI_SUCCESS || bio == NULL || bio->Media == NULL) {
+                        continue;
+                    }
+                    if (bio->Media->LogicalPartition) {
+                        continue;
+                    }
+                    if (!bio->Media->MediaPresent || bio->Media->BlockSize == 0) {
+                        continue;
+                    }
+
+                    UINTN bs = bio->Media->BlockSize;
+                    UINT8 *hdr = AllocatePool(bs);
+                    if (hdr == NULL) {
+                        continue;
+                    }
+                    EFI_STATUS read_status = uefi_call_wrapper(
+                        bio->ReadBlocks,
+                        5,
+                        bio,
+                        bio->Media->MediaId,
+                        1,
+                        bs,
+                        hdr
+                    );
+                    if (read_status == EFI_SUCCESS && gpt_header_valid(hdr, bs)) {
+                        candidate_disk = bio;
+                        FreePool(hdr);
+                        break;
+                    }
+                    FreePool(hdr);
+                }
+
+                if (all_handles != NULL) {
+                    uefi_call_wrapper(st->BootServices->FreePool, 1, all_handles);
+                }
+                if (candidate_disk == NULL) {
+                    return EFI_NOT_FOUND;
+                }
+
+                *out_disk_bio = candidate_disk;
+                return EFI_SUCCESS;
+            }
+            *out_disk_bio = disk_bio;
+            return EFI_SUCCESS;
+        }
+        node = NextDevicePathNode(node);
+    }
+
+    return EFI_NOT_FOUND;
+}
+
+static EFI_STATUS gpt_find_partuuid_by_name(
+    EFI_BLOCK_IO *disk_bio,
+    const CHAR16 *partition_name,
+    CHAR16 *out_partuuid,
+    UINTN out_size
+) {
+    if (disk_bio == NULL || disk_bio->Media == NULL || partition_name == NULL || out_partuuid == NULL || out_size < 37) {
+        return EFI_INVALID_PARAMETER;
+    }
+    if (!disk_bio->Media->MediaPresent) {
+        return EFI_NO_MEDIA;
+    }
+    if (disk_bio->Media->BlockSize == 0) {
+        return EFI_BAD_BUFFER_SIZE;
+    }
+
+    UINTN block_size = disk_bio->Media->BlockSize;
+    UINT8 *gpt_header = AllocatePool(block_size);
+    if (gpt_header == NULL) {
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    EFI_STATUS status = uefi_call_wrapper(
+        disk_bio->ReadBlocks,
+        5,
+        disk_bio,
+        disk_bio->Media->MediaId,
+        1,
+        block_size,
+        gpt_header
+    );
+    if (status != EFI_SUCCESS) {
+        FreePool(gpt_header);
+        return status;
+    }
+
+    if (!gpt_header_valid(gpt_header, block_size)) {
+        FreePool(gpt_header);
+        return EFI_NOT_FOUND;
+    }
+
+    UINT64 part_entry_lba = 0;
+    UINT32 num_part_entries = 0;
+    UINT32 part_entry_size = 0;
+    UINT64 header_lba = 0;
+    UINT32 header_size = 0;
+    part_entry_lba = read_le64(gpt_header + 72);
+    num_part_entries = read_le32(gpt_header + 80);
+    part_entry_size = read_le32(gpt_header + 84);
+    header_lba = read_le64(gpt_header + 24);
+    header_size = read_le32(gpt_header + 12);
+    FreePool(gpt_header);
+
+    if (header_lba != 1) {
+        return EFI_NOT_FOUND;
+    }
+    if (header_size < 92 || header_size > block_size) {
+        return EFI_NOT_FOUND;
+    }
+    if (part_entry_lba < 2 || num_part_entries == 0 || part_entry_size < 128) {
+        return EFI_NOT_FOUND;
+    }
+    if (part_entry_size > 4096 || (part_entry_size % 8) != 0) {
+        return EFI_NOT_FOUND;
+    }
+    if (num_part_entries > 4096) {
+        return EFI_NOT_FOUND;
+    }
+    UINT64 table_bytes = (UINT64)num_part_entries * (UINT64)part_entry_size;
+    UINT64 table_blocks = (table_bytes + (UINT64)block_size - 1ULL) / (UINT64)block_size;
+    if (table_blocks == 0) {
+        return EFI_NOT_FOUND;
+    }
+    if (part_entry_lba > (UINT64)disk_bio->Media->LastBlock) {
+        return EFI_NOT_FOUND;
+    }
+    if (part_entry_lba + table_blocks - 1ULL > (UINT64)disk_bio->Media->LastBlock) {
+        return EFI_NOT_FOUND;
+    }
+
+    UINT64 entries_per_lba = (UINT64)block_size / (UINT64)part_entry_size;
+    if (entries_per_lba == 0) {
+        return EFI_NOT_FOUND;
+    }
+
+    UINT8 *entry_block = AllocatePool(block_size);
+    if (entry_block == NULL) {
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    for (UINT32 i = 0; i < num_part_entries; i++) {
+        UINT64 idx = (UINT64)i;
+        UINT64 entry_lba = part_entry_lba + (idx / entries_per_lba);
+        UINTN entry_offset = (UINTN)((idx % entries_per_lba) * (UINT64)part_entry_size);
+        if (entry_lba > (UINT64)disk_bio->Media->LastBlock) {
+            break;
+        }
+        if (entry_offset + part_entry_size > block_size) {
+            continue;
+        }
+
+        status = uefi_call_wrapper(
+            disk_bio->ReadBlocks,
+            5,
+            disk_bio,
+            disk_bio->Media->MediaId,
+            (EFI_LBA)entry_lba,
+            block_size,
+            entry_block
+        );
+        if (status != EFI_SUCCESS) {
+            FreePool(entry_block);
+            return status;
+        }
+
+        const UINT8 *entry = entry_block + entry_offset;
+        if (!gpt_entry_name_equals(entry, partition_name)) {
+            continue;
+        }
+
+        EFI_GUID *part_guid = (EFI_GUID *)(entry + 16);
+        SPrint(out_partuuid, out_size * sizeof(CHAR16),
+               L"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+               part_guid->Data1,
+               part_guid->Data2,
+               part_guid->Data3,
+               part_guid->Data4[0], part_guid->Data4[1],
+               part_guid->Data4[2], part_guid->Data4[3],
+               part_guid->Data4[4], part_guid->Data4[5],
+               part_guid->Data4[6], part_guid->Data4[7]);
+
+        FreePool(entry_block);
+        return EFI_SUCCESS;
+    }
+
+    FreePool(entry_block);
+    return EFI_NOT_FOUND;
+}
+
+static EFI_STATUS gpt_find_partuuid_on_any_disk(
+    EFI_SYSTEM_TABLE *st,
+    const CHAR16 *partition_name,
+    CHAR16 *out_partuuid,
+    UINTN out_size
+) {
+    if (st == NULL || st->BootServices == NULL || partition_name == NULL || out_partuuid == NULL || out_size < 37) {
+        return EFI_INVALID_PARAMETER;
+    }
+
+    EFI_HANDLE *handles = NULL;
+    UINTN handle_count = 0;
+    EFI_STATUS status = uefi_call_wrapper(
+        st->BootServices->LocateHandleBuffer,
+        5,
+        ByProtocol,
+        &BlockIoProtocol,
+        NULL,
+        &handle_count,
+        &handles
+    );
+    if (status != EFI_SUCCESS) {
+        return status;
+    }
+
+    EFI_STATUS result = EFI_NOT_FOUND;
+    for (UINTN i = 0; i < handle_count; i++) {
+        EFI_BLOCK_IO *bio = NULL;
+        EFI_STATUS bio_status = uefi_call_wrapper(
+            st->BootServices->HandleProtocol,
+            3,
+            handles[i],
+            &BlockIoProtocol,
+            (VOID **)&bio
+        );
+        if (bio_status != EFI_SUCCESS || bio == NULL || bio->Media == NULL) {
+            continue;
+        }
+        if (bio->Media->LogicalPartition) {
+            continue;
+        }
+        if (!bio->Media->MediaPresent || bio->Media->BlockSize == 0) {
+            continue;
+        }
+
+        // Quick GPT signature probe at LBA1 to avoid expensive scans.
+        UINTN bs = bio->Media->BlockSize;
+        UINT8 *hdr = AllocatePool(bs);
+        if (hdr == NULL) {
+            continue;
+        }
+        EFI_STATUS read_status = uefi_call_wrapper(
+            bio->ReadBlocks,
+            5,
+            bio,
+            bio->Media->MediaId,
+            1,
+            bs,
+            hdr
+        );
+        BOOLEAN is_gpt = (read_status == EFI_SUCCESS && gpt_header_valid(hdr, bs));
+        FreePool(hdr);
+        if (!is_gpt) {
+            continue;
+        }
+
+        EFI_STATUS uuid_status = gpt_find_partuuid_by_name(bio, partition_name, out_partuuid, out_size);
+        if (uuid_status == EFI_SUCCESS) {
+            result = EFI_SUCCESS;
+            break;
+        }
+        result = uuid_status;
+    }
+
+    if (handles != NULL) {
+        uefi_call_wrapper(st->BootServices->FreePool, 1, handles);
+    }
+    return result;
+}
+
 static const CHAR16 *slot_root_device(StratSlotId slot) {
     switch (slot) {
         case STRAT_SLOT_A: return slot_root_partuuid[0];
@@ -721,7 +1147,7 @@ static EFI_STATUS start_kernel_efi(EFI_HANDLE image, EFI_SYSTEM_TABLE *st,
     CHAR16 cmdline[512];
     // Use SPrint from gnu-efi (efilib.h) to build the string:
     SPrint(cmdline, sizeof(cmdline),
-           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s loglevel=0 console=tty0",
+           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s loglevel=4 console=tty0 console=ttyS0,115200",
            root_device, initrd_path);
 
     EFI_LOADED_IMAGE *kernel_image = NULL;
@@ -824,23 +1250,17 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         const CHAR16 *name = slot_name(slot);
         if (name == NULL) continue;
 
-        EFI_BLOCK_IO *bio = NULL;
-        EFI_STATUS find_status = strat_find_partition_by_name(system_table, name, &bio);
-        if (find_status != EFI_SUCCESS || bio == NULL) {
-#ifdef DEBUG
-            debugcon_log("StratBoot: failed to find partition\n");
-#endif
-            continue;
-        }
-
         INT32 idx = (INT32)slot - (INT32)STRAT_SLOT_A;
         if (idx >= 0 && idx < 3) {
-            EFI_STATUS uuid_status = strat_partition_get_partuuid(bio, slot_root_partuuid[idx], 37);
+            EFI_STATUS uuid_status = gpt_find_partuuid_on_any_disk(system_table, name, slot_root_partuuid[idx], 37);
             if (uuid_status != EFI_SUCCESS) {
 #ifdef DEBUG
                 debugcon_log("StratBoot: failed to read PARTUUID\n");
 #endif
                 slot_root_partuuid[idx][0] = '\0';
+                Print(L"StratBoot: PARTUUID read failed for %s: status=0x%lx\n", name, (UINTN)uuid_status);
+            } else {
+                Print(L"StratBoot: %s PARTUUID=%s\n", name, slot_root_partuuid[idx]);
             }
         }
     }
@@ -959,6 +1379,12 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
 
     if (kpath == NULL || rootdev == NULL || initrd == NULL) {
         halt_with_message(system_table, &gop, "STRAT OS", "Invalid slot id");
+        return EFI_ABORTED;
+    }
+
+    if (rootdev[0] == L'\0') {
+        Print(L"StratBoot: Missing slot PARTUUID\n");
+        halt_with_message(system_table, &gop, "STRAT OS", "Missing slot PARTUUID");
         return EFI_ABORTED;
     }
 

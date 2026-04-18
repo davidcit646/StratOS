@@ -1,14 +1,16 @@
 #!/bin/bash
 # Full StratOS build script - builds everything inline and runs QEMU
-# Usage: ./scripts/build-all-and-run.sh [--clean] [--skip-kernel]
+# Usage: ./scripts/build-all-and-run.sh [--clean] [--skip-kernel] [--recreate-disk]
 
-set -e
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$REPO_ROOT/out/phase7"
 PHASE4_DIR="$REPO_ROOT/out/phase4"
 PHASE3_DIR="$REPO_ROOT/out/phase3"
-LOG_FILE="$OUT_DIR/qemu_strattest.log"
+IDE_LOG_DIR="$REPO_ROOT/ide-logs"
+LOG_FILE="$IDE_LOG_DIR/qemu_strattest.txt"
+QEMU_SERIAL_LOG="$IDE_LOG_DIR/qemu-desktop-serial.txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +20,7 @@ NC='\033[0m'
 
 CLEAN_BUILD=0
 SKIP_KERNEL=0
+RECREATE_DISK=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -29,10 +32,15 @@ while [ "$#" -gt 0 ]; do
             SKIP_KERNEL=1
             shift
             ;;
+        --recreate-disk)
+            RECREATE_DISK=1
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [-c] [-s]"
+            echo "Usage: $0 [-c] [-s] [--recreate-disk]"
             echo "  -c, --clean        Clean build (rebuild all from scratch)"
             echo "  -s, --skip-kernel  Skip kernel rebuild (faster)"
+            echo "  --recreate-disk    Recreate GPT test disk before update"
             exit 0
             ;;
         *)
@@ -46,13 +54,28 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_ok() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+require_cmd() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        log_error "Missing required tool: $1"
+        exit 1
+    fi
+}
+
+mkdir -p "$IDE_LOG_DIR"
 
 # Kill existing QEMU
-if pgrep -x "qemu-system-x86_64" > /dev/null 2>&1; then
+if pgrep -f "qemu-system-x86_64.*$REPO_ROOT/out/phase4/test-disk.img" > /dev/null 2>&1; then
     log_warn "Stopping existing QEMU..."
-    pkill -x "qemu-system-x86_64" 2>/dev/null || true
+    pkill -f "qemu-system-x86_64.*$REPO_ROOT/out/phase4/test-disk.img" 2>/dev/null || true
     sleep 2
 fi
+
+require_cmd make
+require_cmd gcc
+require_cmd cargo
+require_cmd cpio
+require_cmd gzip
+require_cmd mkfs.erofs
 
 # ============================================================================
 # 1. BUILD KERNEL
@@ -61,6 +84,18 @@ if [ $SKIP_KERNEL -eq 0 ]; then
     log_info "Building kernel..."
     KERNEL_SRC="$REPO_ROOT/linux"
     KERNEL_CONFIG="$REPO_ROOT/stratos-kernel/stratos.config"
+
+    # Kernel build prerequisites (Kconfig lexer/parser generation)
+    if ! command -v flex >/dev/null 2>&1; then
+        log_error "Missing build tool: flex (required for Linux Kconfig)."
+        log_error "Install flex (and usually bison) or re-run with --skip-kernel."
+        exit 1
+    fi
+    if ! command -v bison >/dev/null 2>&1; then
+        log_error "Missing build tool: bison (required for Linux Kconfig)."
+        log_error "Install bison (and flex) or re-run with --skip-kernel."
+        exit 1
+    fi
     
     if [ ! -d "$KERNEL_SRC" ] || [ ! -f "$KERNEL_SRC/Makefile" ]; then
         log_error "Kernel source not found at $KERNEL_SRC"
@@ -159,7 +194,7 @@ cd "$REPO_ROOT/stratterm"
 if [ $CLEAN_BUILD -eq 1 ]; then
     cargo clean
 fi
-cargo build --release
+cargo build --release --bins
 log_ok "stratterm built"
 
 # ============================================================================
@@ -181,7 +216,7 @@ cd "$REPO_ROOT/stratsup"
 if [ $CLEAN_BUILD -eq 1 ]; then
     cargo clean
 fi
-cargo build --release
+cargo build --release --bins
 log_ok "stratsup built"
 
 # ============================================================================
@@ -249,6 +284,31 @@ cp "$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/stratsup" "$ROOT
     cp "$REPO_ROOT/stratsup/target/release/stratsup" "$ROOTFS_DIR/bin/" 2>/dev/null || true
 cp "$REPO_ROOT/stratterm/target/release/stratterm-indexer" "$ROOTFS_DIR/bin/" 2>/dev/null || true
 cp "$REPO_ROOT/stratterm/target/release/strat-settings" "$ROOTFS_DIR/bin/" 2>/dev/null || true
+if [ -x "$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/strat-validate-boot" ]; then
+    cp "$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/strat-validate-boot" "$ROOTFS_DIR/bin/"
+elif [ -x "$REPO_ROOT/stratsup/target/release/strat-validate-boot" ]; then
+    cp "$REPO_ROOT/stratsup/target/release/strat-validate-boot" "$ROOTFS_DIR/bin/"
+else
+    log_warn "strat-validate-boot binary missing; installing fallback no-op helper"
+    cat > "$ROOTFS_DIR/bin/strat-validate-boot" <<'EOF'
+#!/bin/sh
+echo "strat-validate-boot: fallback no-op"
+exit 0
+EOF
+    chmod 0755 "$ROOTFS_DIR/bin/strat-validate-boot"
+fi
+if [ -f "$REPO_ROOT/sysroot/strat-indexer-boot.sh" ]; then
+    cp "$REPO_ROOT/sysroot/strat-indexer-boot.sh" "$ROOTFS_DIR/bin/"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-indexer-boot.sh"
+else
+    log_warn "strat-indexer-boot.sh missing; installing fallback no-op helper"
+    cat > "$ROOTFS_DIR/bin/strat-indexer-boot.sh" <<'EOF'
+#!/bin/sh
+echo "strat-indexer-boot: fallback no-op"
+exit 0
+EOF
+    chmod 0755 "$ROOTFS_DIR/bin/strat-indexer-boot.sh"
+fi
 
 # Build and copy system-init
 gcc -Os -static -s -Wall -Wextra -o "$ROOTFS_DIR/sbin/system-init" "$SYSTEM_INIT_SRC" 2>/dev/null || \
@@ -272,11 +332,6 @@ else
     ln -sf /bin/sh "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 fi
 
-# Copy foot terminal if available
-if [ -x /usr/bin/foot ]; then
-    cp /usr/bin/foot "$ROOTFS_DIR/bin/"
-fi
-
 # Copy seatd if available
 if [ -x "$REPO_ROOT/third_party/seatd/build/seatd" ]; then
     cp "$REPO_ROOT/third_party/seatd/build/seatd" "$ROOTFS_DIR/bin/"
@@ -285,10 +340,10 @@ elif [ -x /usr/sbin/seatd ]; then
 fi
 
 # Copy essential libraries
-for libdir in /usr/lib64 /usr/lib /lib64 /lib; do
+for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
     if [ -d "$libdir" ]; then
         for lib in "$libdir"/*.so*; do
-            if [ -f "$lib" ] && [ ! -L "$lib" ]; then
+            if [ -f "$lib" ]; then
                 cp -L "$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
             fi
         done
@@ -305,7 +360,7 @@ done
 
 # Copy key system libraries
 for lib in libc.so libm.so libdl.so libpthread.so librt.so; do
-    for libdir in /usr/lib64 /lib64 /usr/lib /lib; do
+    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
         if [ -f "$libdir/$lib" ]; then
             cp -L "$libdir/$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
             break
@@ -313,11 +368,24 @@ for lib in libc.so libm.so libdl.so libpthread.so librt.so; do
     done
 done
 
+# Ensure critical runtime SONAMEs exist (some hosts expose these as symlinks).
+for soname in libgcc_s.so.1 libstdc++.so.6; do
+    if [ -e "$ROOTFS_DIR/lib64/$soname" ]; then
+        continue
+    fi
+    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+        if [ -e "$libdir/$soname" ]; then
+            cp -L "$libdir/$soname" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
+            break
+        fi
+    done
+done
+
 # Copy Wayland and graphics libraries
 for lib in libwayland-server.so libwayland-client.so libwlroots-*.so libpixman-1.so libxkbcommon.so libinput.so libevdev.so libdrm.so libEGL.so libgbm.so libGLESv2.so libvulkan.so libseat.so libudev.so; do
-    for libdir in /usr/lib64 /lib64 /usr/lib /lib; do
+    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
         for match in "$libdir"/$lib*; do
-            if [ -f "$match" ] && [ ! -L "$match" ]; then
+            if [ -f "$match" ]; then
                 cp -L "$match" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
             fi
         done
@@ -326,9 +394,9 @@ done
 
 # Copy fontconfig and related libs
 for lib in libfontconfig.so libfreetype.so libpng.so libz.so libexpat.so libbrotli*.so; do
-    for libdir in /usr/lib64 /lib64 /usr/lib /lib; do
+    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
         for match in "$libdir"/$lib*; do
-            if [ -f "$match" ] && [ ! -L "$match" ]; then
+            if [ -f "$match" ]; then
                 cp -L "$match" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
             fi
         done
@@ -343,6 +411,12 @@ cp -r /usr/share/terminfo/x "$ROOTFS_DIR/usr/share/terminfo/" 2>/dev/null || tru
 mkdir -p "$ROOTFS_DIR/usr/share/fonts"
 cp -r /usr/share/fonts/* "$ROOTFS_DIR/usr/share/fonts/" 2>/dev/null || true
 
+# Copy runtime data needed by libinput/xkb at boot.
+mkdir -p "$ROOTFS_DIR/usr/share"
+cp -aL /usr/share/libinput "$ROOTFS_DIR/usr/share/" 2>/dev/null || true
+mkdir -p "$ROOTFS_DIR/usr/share/X11"
+cp -aL /usr/share/X11/xkb "$ROOTFS_DIR/usr/share/X11/" 2>/dev/null || true
+
 # Create ld.so.conf
 mkdir -p "$ROOTFS_DIR/etc"
 echo "/lib64" > "$ROOTFS_DIR/etc/ld.so.conf"
@@ -350,7 +424,7 @@ echo "/usr/lib64" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/lib" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/usr/lib" >> "$ROOTFS_DIR/etc/ld.so.conf"
 
-# Create passwd file for foot terminal
+# Create passwd file
 echo "root:x:0:0:root:/root:/bin/sh" > "$ROOTFS_DIR/etc/passwd"
 mkdir -p "$ROOTFS_DIR/root"
 
@@ -376,55 +450,27 @@ BOOT_EFI="$PHASE3_DIR/BOOTX64.EFI"
 KERNEL_EFI="$PHASE4_DIR/vmlinuz"
 INITRD_IMG="$OUT_DIR/initramfs.cpio.gz"
 
-if [ ! -f "$DISK_IMAGE" ]; then
+if [ "$RECREATE_DISK" -eq 1 ]; then
+    log_info "Recreating test disk..."
+    "$REPO_ROOT/scripts/create-test-disk.sh"
+elif [ ! -f "$DISK_IMAGE" ]; then
     log_warn "Test disk not found, creating..."
-    "$REPO_ROOT/scripts/phase4/create-test-disk.sh"
+    "$REPO_ROOT/scripts/create-test-disk.sh"
 fi
 
-# Get partition offsets
-read_part_field() { part=$1; field=$2; echo "$(parted -sm "$DISK_IMAGE" unit B print 2>/dev/null | grep "^$part:" | cut -d: -f$field | tr -d 'B')"; }
-
-PART1_START=$(read_part_field 1 2)
-PART2_START=$(read_part_field 2 2)
-
-if [ -z "$PART1_START" ] || [ -z "$PART2_START" ]; then
-    log_error "Failed to parse partition table"
+UPDATE_HELPER="$REPO_ROOT/scripts/update-test-disk.sh"
+if [ ! -x "$UPDATE_HELPER" ]; then
+    log_error "Missing update helper: $UPDATE_HELPER"
     exit 1
 fi
 
-PART1_START_LBA=$((PART1_START / 512))
-PART2_START_LBA=$((PART2_START / 512))
+"$UPDATE_HELPER" \
+    --disk "$DISK_IMAGE" \
+    --slot-a-erofs "$SLOT_A_EROFS" \
+    --boot-efi "$BOOT_EFI" \
+    --kernel "$KERNEL_EFI" \
+    --initrd "$INITRD_IMG"
 
-# Update slot A (EROFS)
-log_info "Writing EROFS to slot A (offset $PART2_START_LBA)..."
-dd if="$SLOT_A_EROFS" of="$DISK_IMAGE" bs=512 seek="$PART2_START_LBA" conv=notrunc status=none
-
-# Update ESP with fresh assets
-ESP_TEMP=$(mktemp)
-log_info "Updating ESP..."
-dd if="$DISK_IMAGE" of="$ESP_TEMP" bs=512 skip="$PART1_START_LBA" count=262144 status=none 2>/dev/null || true
-
-# Create fresh ESP
-ESP_SIZE_MB=128
-ESP_SIZE_BYTES=$((ESP_SIZE_MB * 1024 * 1024))
-rm -f "$ESP_TEMP"
-mkfs.vfat -F 32 -C "$ESP_TEMP" $((ESP_SIZE_BYTES / 1024)) 2>/dev/null || mkfs.vfat -F 32 "$ESP_TEMP" 2>/dev/null || true
-
-# Copy files to ESP
-if command -v mmd >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
-    mmd -i "$ESP_TEMP" ::/EFI ::/EFI/BOOT ::/EFI/STRAT ::/EFI/STRAT/SLOT_A 2>/dev/null || true
-    mcopy -i "$ESP_TEMP" "$BOOT_EFI" ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
-    mcopy -i "$ESP_TEMP" "$KERNEL_EFI" ::/EFI/STRAT/SLOT_A/vmlinuz.efi 2>/dev/null || true
-    mcopy -i "$ESP_TEMP" "$INITRD_IMG" ::/EFI/STRAT/SLOT_A/initramfs.img 2>/dev/null || true
-    
-    # Write ESP back
-    dd if="$ESP_TEMP" of="$DISK_IMAGE" bs=512 seek="$PART1_START_LBA" conv=notrunc status=none
-    log_ok "ESP updated with fresh assets"
-else
-    log_warn "mtools not available, skipping ESP update"
-fi
-
-rm -f "$ESP_TEMP"
 log_ok "Test disk updated -> $DISK_IMAGE"
 
 # ============================================================================
@@ -433,10 +479,13 @@ log_ok "Test disk updated -> $DISK_IMAGE"
 log_info "Starting QEMU..."
 log_info "Logging to: $LOG_FILE"
 
-QEMU_SCRIPT="$REPO_ROOT/scripts/phase7/run-qemu-desktop.sh"
+QEMU_SCRIPT="$REPO_ROOT/scripts/run-qemu.sh"
 
 if [ -x "$QEMU_SCRIPT" ]; then
-    "$QEMU_SCRIPT" 2>&1 | tee "$LOG_FILE"
+    : > "$LOG_FILE"
+    : > "$QEMU_SERIAL_LOG"
+    SERIAL_LOG_PATH="$QEMU_SERIAL_LOG" "$QEMU_SCRIPT" 2>&1 | tee "$LOG_FILE"
+    log_ok "QEMU serial log: $QEMU_SERIAL_LOG"
 else
     log_error "QEMU script not found: $QEMU_SCRIPT"
     exit 1

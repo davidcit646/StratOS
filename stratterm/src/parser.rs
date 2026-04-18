@@ -365,24 +365,24 @@ impl VtParser {
                     // Not underlined
                     screen.set_underline(false);
                 }
-                30 => screen.set_color(Color::Indexed(0), Color::Default), // Black fg
-                31 => screen.set_color(Color::Indexed(1), Color::Default), // Red fg
-                32 => screen.set_color(Color::Indexed(2), Color::Default), // Green fg
-                33 => screen.set_color(Color::Indexed(3), Color::Default), // Yellow fg
-                34 => screen.set_color(Color::Indexed(4), Color::Default), // Blue fg
-                35 => screen.set_color(Color::Indexed(5), Color::Default), // Magenta fg
-                36 => screen.set_color(Color::Indexed(6), Color::Default), // Cyan fg
-                37 => screen.set_color(Color::Indexed(7), Color::Default), // White fg
-                39 => screen.set_color(Color::Default, Color::Default), // Default fg
-                40 => screen.set_color(Color::Default, Color::Indexed(0)), // Black bg
-                41 => screen.set_color(Color::Default, Color::Indexed(1)), // Red bg
-                42 => screen.set_color(Color::Default, Color::Indexed(2)), // Green bg
-                43 => screen.set_color(Color::Default, Color::Indexed(3)), // Yellow bg
-                44 => screen.set_color(Color::Default, Color::Indexed(4)), // Blue bg
-                45 => screen.set_color(Color::Default, Color::Indexed(5)), // Magenta bg
-                46 => screen.set_color(Color::Default, Color::Indexed(6)), // Cyan bg
-                47 => screen.set_color(Color::Default, Color::Indexed(7)), // White bg
-                49 => screen.set_color(Color::Default, Color::Default), // Default bg
+                30 => screen.set_foreground(Color::Indexed(0)), // Black fg
+                31 => screen.set_foreground(Color::Indexed(1)), // Red fg
+                32 => screen.set_foreground(Color::Indexed(2)), // Green fg
+                33 => screen.set_foreground(Color::Indexed(3)), // Yellow fg
+                34 => screen.set_foreground(Color::Indexed(4)), // Blue fg
+                35 => screen.set_foreground(Color::Indexed(5)), // Magenta fg
+                36 => screen.set_foreground(Color::Indexed(6)), // Cyan fg
+                37 => screen.set_foreground(Color::Indexed(7)), // White fg
+                39 => screen.set_foreground(Color::Default), // Default fg
+                40 => screen.set_background(Color::Indexed(0)), // Black bg
+                41 => screen.set_background(Color::Indexed(1)), // Red bg
+                42 => screen.set_background(Color::Indexed(2)), // Green bg
+                43 => screen.set_background(Color::Indexed(3)), // Yellow bg
+                44 => screen.set_background(Color::Indexed(4)), // Blue bg
+                45 => screen.set_background(Color::Indexed(5)), // Magenta bg
+                46 => screen.set_background(Color::Indexed(6)), // Cyan bg
+                47 => screen.set_background(Color::Indexed(7)), // White bg
+                49 => screen.set_background(Color::Default), // Default bg
                 _ => {}
             }
         }
