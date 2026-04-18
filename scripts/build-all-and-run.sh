@@ -55,12 +55,7 @@ fi
 # Build kernel if requested
 if [ $SKIP_KERNEL -eq 0 ]; then
     log_info "Building kernel..."
-    cd "$REPO_ROOT/stratos-kernel"
-    if [ $CLEAN_BUILD -eq 1 ]; then
-        make clean 2>/dev/null || true
-    fi
-    make -j$(nproc)
-    cp arch/x86/boot/bzImage "$REPO_ROOT/out/phase4/vmlinuz"
+    "$REPO_ROOT/scripts/phase4/build-kernel.sh"
     log_ok "Kernel built"
 else
     log_info "Skipping kernel build (--skip-kernel)"
@@ -70,10 +65,10 @@ fi
 log_info "Building stratboot EFI..."
 cd "$REPO_ROOT/stratboot"
 if [ $CLEAN_BUILD -eq 1 ]; then
-    cargo clean
+    make clean
 fi
-cargo build --release
-cp target/x86_64-unknown-uefi/release/stratboot.efi "$REPO_ROOT/out/phase3/BOOTX64.EFI"
+make
+cp stratboot.efi "$REPO_ROOT/out/phase3/BOOTX64.EFI"
 log_ok "stratboot built"
 
 # Build stratvm
