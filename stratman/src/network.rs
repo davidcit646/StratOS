@@ -6,7 +6,6 @@
 //! Design: Run as stratman child process, restart on failure, signal state via exit codes.
 
 use std::fs;
-use std::os::unix::io::RawFd;
 use std::time::{Duration, Instant};
 
 /// Network interface state
@@ -332,7 +331,7 @@ fn get_mac_address(iface: &str) -> Result<[u8; 6], String> {
     
     let mut mac = [0u8; 6];
     unsafe {
-        mac.copy_from_slice(&ifr.ifr_hwaddr.sa_data[..6]);
+        mac.copy_from_slice(&ifr.ifr_ifru.ifru_hwaddr.sa_data[..6]);
     }
     Ok(mac)
 }
@@ -634,7 +633,7 @@ fn set_ip_address(iface: &str, ip: [u8; 4], netmask: [u8; 4]) -> Result<(), Stri
     unsafe {
         std::ptr::copy_nonoverlapping(
             &addr as *const _ as *const u8,
-            &mut ifr.ifr_addr as *mut _ as *mut u8,
+            &mut ifr.ifr_ifru.ifru_addr as *mut _ as *mut u8,
             std::mem::size_of::<libc::sockaddr_in>(),
         );
     }
@@ -657,7 +656,7 @@ fn set_ip_address(iface: &str, ip: [u8; 4], netmask: [u8; 4]) -> Result<(), Stri
     unsafe {
         std::ptr::copy_nonoverlapping(
             &netmask_addr as *const _ as *const u8,
-            &mut ifr.ifr_netmask as *mut _ as *mut u8,
+            &mut ifr.ifr_ifru.ifru_netmask as *mut _ as *mut u8,
             std::mem::size_of::<libc::sockaddr_in>(),
         );
     }
@@ -890,7 +889,7 @@ fn remove_ip_address(iface: &str) -> Result<(), String> {
     unsafe {
         std::ptr::copy_nonoverlapping(
             &addr as *const _ as *const u8,
-            &mut ifr.ifr_addr as *mut _ as *mut u8,
+            &mut ifr.ifr_ifru.ifru_addr as *mut _ as *mut u8,
             std::mem::size_of::<libc::sockaddr_in>(),
         );
     }
@@ -906,7 +905,7 @@ fn remove_ip_address(iface: &str) -> Result<(), String> {
 }
 
 /// Attempt to renew lease with current server (unicast at T1)
-fn dhcp_renew(iface: &str, lease: &DhcpLease) -> Result<DhcpLease, String> {
+fn dhcp_renew(_iface: &str, lease: &DhcpLease) -> Result<DhcpLease, String> {
     println!("strat-network: Renewing lease at T1 ({}s / {}s elapsed)",
         lease.t1().as_secs(), lease.elapsed().as_secs());
     
