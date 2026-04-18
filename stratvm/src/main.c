@@ -1821,6 +1821,9 @@ int main(void) {
     server.cursor_manager = wlr_xcursor_manager_create(NULL, 24);
     wlr_xcursor_manager_load(server.cursor_manager, 1);
 
+    /* Set default cursor image */
+    wlr_cursor_set_xcursor(server.cursor, server.cursor_manager, "default");
+
     server.cursor_motion.notify = cursor_motion_notify;
     wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
     server.cursor_motion_absolute.notify = cursor_motion_absolute_notify;
@@ -1997,6 +2000,12 @@ static struct stratwm_evdev_device *evdev_device_create(
         wlr_keyboard_set_repeat_info(kbd, 25, 600);
         dev->wlr.keyboard = kbd;
 
+        /* Set seat keyboard and capabilities */
+        wlr_seat_set_keyboard(server->seat, kbd);
+        wlr_seat_set_capabilities(server->seat,
+            WL_SEAT_CAPABILITY_KEYBOARD |
+            (wl_list_empty(&server->keyboards) ? 0 : WL_SEAT_CAPABILITY_POINTER));
+
         /* Emit new_input signal */
         wl_signal_emit(&server->backend->events.new_input, &kbd->base);
     } else if (dev->is_pointer) {
@@ -2005,6 +2014,12 @@ static struct stratwm_evdev_device *evdev_device_create(
 
         wlr_pointer_init(ptr, NULL, path);
         dev->wlr.pointer = ptr;
+
+        /* Set seat pointer and capabilities */
+        wlr_seat_set_capabilities(server->seat,
+            WL_SEAT_CAPABILITY_POINTER |
+            (wl_list_empty(&server->keyboards) ? 0 : WL_SEAT_CAPABILITY_KEYBOARD));
+        wlr_seat_pointer_notify_enter(server->seat, NULL, 0, 0);
 
         /* Emit new_input signal */
         wl_signal_emit(&server->backend->events.new_input, &ptr->base);
@@ -2065,6 +2080,12 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
     struct stratwm_evdev_device *dev = data;
     struct input_event ev;
     static double accum_dx = 0, accum_dy = 0;
+    static int event_count = 0;
+
+    event_count++;
+    if (event_count <= 5) {
+        fprintf(stderr, "stratwm: evdev event on %s (ptr=%d)\n", dev->path, dev->is_pointer);
+    }
 
     while (libevdev_next_event(dev->evdev, LIBEVDEV_READ_FLAG_NORMAL, &ev) == LIBEVDEV_READ_STATUS_SUCCESS) {
         if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
@@ -2079,6 +2100,12 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
                     .unaccel_dy = accum_dy
                 };
                 wl_signal_emit(&dev->wlr.pointer->events.motion, &motion);
+
+                /* Move the cursor directly (bypasses the cursor_motion_notify handler) */
+                wlr_cursor_move(dev->server->cursor, NULL, accum_dx, accum_dy);
+                wlr_seat_pointer_notify_motion(dev->server->seat, motion.time_msec,
+                    dev->server->cursor->x, dev->server->cursor->y);
+
                 accum_dx = 0;
                 accum_dy = 0;
             }
@@ -2146,6 +2173,10 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
                 .state = ev.value ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED
             };
             wl_signal_emit(&dev->wlr.pointer->events.button, &btn);
+
+            /* Notify seat of button event */
+            wlr_seat_pointer_notify_button(dev->server->seat, btn.time_msec,
+                btn.button, btn.state);
         }
     }
 

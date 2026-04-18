@@ -2,8 +2,17 @@ extern crate libc;
 
 mod service;
 mod maint;
+mod network;
 
 fn main() -> ! {
+    // Check for network manager mode (called as child process)
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--network" {
+        // Run as network manager child process
+        let config = network::NetworkConfig::default();
+        network::run_network_manager(config);
+    }
+    
     unsafe {
         attach_console_stdio();
         set_environment_variables();

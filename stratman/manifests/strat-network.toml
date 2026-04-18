@@ -1,0 +1,9 @@
+name = "strat-network"
+exec = "/bin/stratman"
+args = ["--network"]
+restart = "always"
+# Restart with exponential backoff: 5s, 10s, 20s, 40s, 60s (max)
+# Exit codes:
+#   100 = Link down (expected, retry)
+#   101 = DHCP failed (retry with backoff)
+#   102 = Interface missing (fatal, check hardware)

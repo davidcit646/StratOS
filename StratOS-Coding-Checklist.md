@@ -48,7 +48,7 @@
 ### Phase 10: stratvm (Compositor)
 - [x] Implement tiling engine logic
 - [x] Build custom GPU-accelerated rendering pipeline
-- [x] Create input handling for keyboard and mouse (libinput wrapper)
+- [x] Create input handling for keyboard and mouse (direct evdev, bypasses udev/libinput)
 
 ### Phase 11: StratTerm (Terminal)
 - [x] Implement custom PTY handling logic
@@ -107,9 +107,10 @@
 - [ ] Build CLI tool for system-wide preference management
 
 ### Phase 15: Network Stack Minimalist
-- [ ] Implement custom wrapper for network interface management
-- [ ] Build minimalist DHCP client
+- [x] Implement custom wrapper for network interface management (strat-network as stratman child)
+- [~] Build minimalist DHCP client (framework in place, DHCP protocol implementation pending)
 - [ ] Create StratMon integration for secure HTTPS downloads
+- [x] Kernel networking support (CONFIG_NET, CONFIG_INET, Ethernet + WiFi drivers)
 
 ### Phase 16: User Session Management
 - [ ] Implement custom login/auth module
