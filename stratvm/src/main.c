@@ -117,6 +117,7 @@ struct stratwm_input_manager {
 
 static const float STRAT_BG[4] = {0.102f, 0.102f, 0.180f, 1.0f};
 static void update_view_border(struct stratwm_view *view, bool focused);
+static void update_titlebar_buttons(struct stratwm_view *view, int width);
 
 static void spawn_terminal(void) {
     pid_t pid = fork();
