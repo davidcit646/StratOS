@@ -122,12 +122,13 @@
 - PTY + Wayland front end (`stratterm/src/pty.rs`, `wayland.rs`, `main.rs`)
 - Renderer + font path (`stratterm/src/renderer.rs`, `font.rs`)
 - Escape parser (`stratterm/src/parser.rs`)
+- File browser overlay keeps PTY input routing explicit; scrollback is unchanged under the Wayland-side panel (`renderer.rs` draws the overlay after the terminal buffer).
 
 ## Phase 12: Spotlite
 
 - Filesystem indexer + SQLite (`stratterm/src/bin/stratterm-indexer.rs`; `/config/strat/indexer.conf`)
-- In-terminal file browser overlay (`stratterm/src/file_browser.rs`, `stratterm/src/main.rs` — F7 / browser flows)
-- Dedicated global Spotlite launcher (search-first overlay across apps per design)
+- In-terminal file browser overlay (`stratterm/src/file_browser.rs`, `stratterm/src/main.rs` — F7 / browser flows): directory listing errors surface in-panel; non-extension executables are not auto-opened; paths passed to the shell are single-quoted safely; symlink and indexer DB status are shown as plain labels (no fake progress).
+- Dedicated global Spotlite launcher (search-first overlay across apps per design) — deferred; browser shows read-only `path-index.db` row counts when the file exists.
 
 ---
 

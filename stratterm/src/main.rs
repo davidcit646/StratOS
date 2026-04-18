@@ -17,9 +17,10 @@ use parser::VtParser;
 use pty::Pty;
 use renderer::{Renderer, UiOverlay};
 use screen::ScreenBuffer;
+use rusqlite::{Connection, OpenFlags};
 use std::fs;
 use std::os::unix::io::BorrowedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wayland::WaylandWindow;
 
@@ -34,6 +35,7 @@ const KEYSYM_SHIFT_RIGHT: u32 = 0xFFE2;
 const KEYSYM_PAGE_UP: u32 = 0xFF55;
 const KEYSYM_PAGE_DOWN: u32 = 0xFF56;
 const KEYSYM_RIGHT: u32 = 0xFF53;
+const KEYSYM_LEFT: u32 = 0xFF51;
 const KEYSYM_F6: u32 = 0xFFC3;
 const KEYSYM_F7: u32 = 0xFFC4;
 const KEYSYM_TAB: u32 = 0xFF09;
@@ -45,6 +47,8 @@ const KEYSYM_SPACE: u32 = 0x0020;
 
 const BTN_LEFT: u32 = 272;
 const MOUSE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(450);
+/// `wl_pointer.axis` — vertical scroll (Wayland core protocol).
+const WL_POINTER_AXIS_VERTICAL_SCROLL: u32 = 0;
 
 #[derive(Clone, Copy, Debug)]
 struct BrowserLayout {
@@ -89,6 +93,63 @@ fn update_status_title(window: &mut WaylandWindow, browser: &FileBrowser, screen
 
 fn trim_for_width(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+fn shell_single_quote(path: &str) -> String {
+    let mut out = String::from("'");
+    for ch in path.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn path_is_readable(path: &Path) -> bool {
+    fs::OpenOptions::new().read(true).open(path).is_ok()
+}
+
+fn path_index_db_path() -> PathBuf {
+    let config_db = PathBuf::from("/config/strat/path-index.db");
+    if config_db.parent().is_some_and(|parent| parent.exists()) {
+        return config_db;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".config/strat/path-index.db");
+    }
+    PathBuf::from("/tmp/strat-path-index.db")
+}
+
+/// Read-only peek at the indexer SQLite DB (same path rules as `stratterm-indexer`).
+fn indexer_preview_stub() -> Option<String> {
+    let db = path_index_db_path();
+    if !db.is_file() {
+        return Some("Spotlite index: no path-index.db yet".to_string());
+    }
+    let conn = match Connection::open_with_flags(
+        &db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(_) => return Some("Spotlite index: cannot open DB read-only".to_string()),
+    };
+    let count: i64 = match conn.query_row("SELECT COUNT(*) FROM path_index", [], |row| row.get(0))
+    {
+        Ok(c) => c,
+        Err(_) => return Some("Spotlite index: DB present but not readable".to_string()),
+    };
+    let max_epoch: Option<i64> = conn
+        .query_row("SELECT MAX(indexed_epoch) FROM path_index", [], |row| row.get(0))
+        .ok()
+        .flatten();
+    let detail = match max_epoch {
+        Some(epoch) if count > 0 => format!("last batch epoch {epoch}"),
+        _ => "no rows".to_string(),
+    };
+    Some(format!("Spotlite: {count} paths ({detail})"))
 }
 
 fn browser_visible_range(selected: usize, len: usize) -> (usize, usize) {
@@ -149,6 +210,15 @@ fn build_overlay(
     let entries = browser.entries();
     if entries.is_empty() {
         overlay.browser_lines.push("(no entries)".to_string());
+        overlay.preview_lines.push(trim_for_width(browser_message, 44));
+        if let Some(err) = browser.list_dir_error() {
+            overlay
+                .preview_lines
+                .push(trim_for_width(&format!("List: {}", err), 44));
+        }
+        if let Some(line) = indexer_preview_stub() {
+            overlay.preview_lines.push(trim_for_width(&line, 44));
+        }
         return overlay;
     }
 
@@ -171,6 +241,14 @@ fn build_overlay(
     let selected_entry = &entries[selected];
     let preview = browser.preview_for(&selected_entry.path);
     overlay.preview_lines.push(trim_for_width(browser_message, 44));
+    if let Some(err) = browser.list_dir_error() {
+        overlay
+            .preview_lines
+            .push(trim_for_width(&format!("List: {}", err), 44));
+    }
+    if let Some(line) = indexer_preview_stub() {
+        overlay.preview_lines.push(trim_for_width(&line, 44));
+    }
     match preview {
         file_browser::PreviewKind::FolderSummary(text)
         | file_browser::PreviewKind::ScriptHint(text)
@@ -186,6 +264,12 @@ fn build_overlay(
     }
 
     overlay
+}
+
+/// True when the pointer is in the right-hand browser column (list + preview).
+fn pointer_in_browser_panel(pointer_x: i32, width: i32) -> bool {
+    let layout = browser_layout(width);
+    pointer_x >= layout.panel_x && pointer_x < layout.panel_x + layout.panel_width
 }
 
 fn entry_index_from_pointer(
@@ -233,18 +317,30 @@ fn activate_browser_entry(
 
     let selected = browser.entries()[*browser_selected].clone();
     if selected.is_dir {
-        if browser.navigate_to(selected.path.clone()) {
-            *browser_selected = 0;
-            *pending_script_path = None;
-            *pending_script_ts = None;
-            *browser_message = format!("Opened {}", selected.path.display());
-            return Ok(true);
+        let path_disp = selected.path.display().to_string();
+        match browser.navigate_to(selected.path.clone()) {
+            Ok(()) => {
+                *browser_selected = 0;
+                *pending_script_path = None;
+                *pending_script_ts = None;
+                *browser_message = format!("Opened {}", path_disp);
+                return Ok(true);
+            }
+            Err(reason) => {
+                *browser_message = format!("Cannot open directory: {}", reason);
+                return Ok(true);
+            }
         }
-        return Ok(false);
     }
 
     match browser.action_for_double_click(&selected.path) {
         file_browser::DoubleClickAction::RunScriptConfirm => {
+            if !path_is_readable(&selected.path) {
+                *browser_message = format!("Cannot read {}", selected.path.display());
+                *pending_script_path = None;
+                *pending_script_ts = None;
+                return Ok(true);
+            }
             let now = Instant::now();
             let double_confirmed = pending_script_path
                 .as_ref()
@@ -252,7 +348,8 @@ fn activate_browser_entry(
                 && pending_script_ts
                     .is_some_and(|ts| now.duration_since(ts) <= Duration::from_secs(2));
             if double_confirmed {
-                let command = format!("sh '{}'\n", selected.path.display());
+                let q = shell_single_quote(&selected.path.to_string_lossy());
+                let command = format!("sh {q}\n");
                 pty.write(command.as_bytes())
                     .map_err(|e| format!("PTY write failed: {}", e))?;
                 *browser_message = format!("Ran script {}", selected.path.display());
@@ -265,20 +362,32 @@ fn activate_browser_entry(
             }
         }
         file_browser::DoubleClickAction::OpenConfigEditor => {
-            let command = format!(
-                "nano '{}' || vi '{}'\n",
-                selected.path.display(),
-                selected.path.display()
-            );
+            if !path_is_readable(&selected.path) {
+                *browser_message = format!("Cannot read {}", selected.path.display());
+                return Ok(true);
+            }
+            let q = shell_single_quote(&selected.path.to_string_lossy());
+            let command = format!("nano {q} || vi {q}\n");
             pty.write(command.as_bytes())
                 .map_err(|e| format!("PTY write failed: {}", e))?;
             *browser_message = format!("Editing {}", selected.path.display());
         }
         file_browser::DoubleClickAction::OpenWithXdg => {
-            let command = format!("xdg-open '{}' >/dev/null 2>&1 &\n", selected.path.display());
+            if !path_is_readable(&selected.path) {
+                *browser_message = format!("Cannot read {}", selected.path.display());
+                return Ok(true);
+            }
+            let q = shell_single_quote(&selected.path.to_string_lossy());
+            let command = format!("xdg-open {q} >/dev/null 2>&1 &\n");
             pty.write(command.as_bytes())
                 .map_err(|e| format!("PTY write failed: {}", e))?;
             *browser_message = format!("Opened {}", selected.path.display());
+        }
+        file_browser::DoubleClickAction::RefuseExecutableAutoOpen => {
+            *browser_message = format!(
+                "Not opening executable `{}` from browser; use the shell.",
+                selected.name
+            );
         }
         file_browser::DoubleClickAction::NavigateDirectory => {}
     }
@@ -379,10 +488,11 @@ fn main() -> Result<(), String> {
     let mut renderer = Renderer::new(width as u32, height as u32);
 
     let mut typed_line = String::new();
-    let mut ghost_suffix = String::new();
+    let mut ghost_suffix = refresh_ghost_suffix("", frecency.as_ref());
     let mut browser_active = false;
     let mut browser_selected = 0usize;
-    let mut browser_message = String::from("F7 toggle | Enter open | Space expand");
+    let mut browser_message =
+        String::from("F7 toggle | Enter open | Space tree | Left parent");
     let mut pending_script_path: Option<PathBuf> = None;
     let mut pending_script_ts: Option<Instant> = None;
     let mut pointer_x = 0i32;
@@ -390,7 +500,6 @@ fn main() -> Result<(), String> {
     let mut last_click_entry: Option<usize> = None;
     let mut last_click_ts: Option<Instant> = None;
 
-    ghost_suffix = refresh_ghost_suffix(&typed_line, frecency.as_ref());
     render_frame(
         &mut renderer,
         &screen,
@@ -478,6 +587,38 @@ fn main() -> Result<(), String> {
                         pointer_x = surface_x as i32;
                         pointer_y = surface_y as i32;
                     }
+                    stratlayer::Event::PointerLeave => {
+                        last_click_entry = None;
+                        last_click_ts = None;
+                    }
+                    stratlayer::Event::PointerAxis { axis, value } => {
+                        if browser_active
+                            && axis == WL_POINTER_AXIS_VERTICAL_SCROLL
+                            && pointer_in_browser_panel(pointer_x, width)
+                        {
+                            let entry_count = file_browser.entries().len();
+                            if entry_count > 0 {
+                                let direction = if value > 0.0 {
+                                    1i32
+                                } else if value < 0.0 {
+                                    -1
+                                } else {
+                                    0
+                                };
+                                if direction != 0 {
+                                    let steps = ((value.abs() / 40.0).ceil() as usize).clamp(1, 6);
+                                    let delta = direction * steps as i32;
+                                    let next = browser_selected as i32 + delta;
+                                    browser_selected = next.clamp(0, (entry_count - 1) as i32) as usize;
+                                    browser_message = format!(
+                                        "Selected {}",
+                                        file_browser.entries()[browser_selected].name
+                                    );
+                                    ui_dirty = true;
+                                }
+                            }
+                        }
+                    }
                     stratlayer::Event::PointerButton { button, state } => {
                         if browser_active && state == 1 && button == BTN_LEFT {
                             if let Some(index) = entry_index_from_pointer(
@@ -548,6 +689,22 @@ fn main() -> Result<(), String> {
                                     ui_dirty = true;
                                     continue;
                                 }
+                                if key == KEYSYM_LEFT {
+                                    match file_browser.go_up() {
+                                        Ok(()) => {
+                                            browser_selected = 0;
+                                            pending_script_path = None;
+                                            pending_script_ts = None;
+                                            browser_message =
+                                                format!("Up: {}", file_browser.cwd().display());
+                                        }
+                                        Err(reason) => {
+                                            browser_message = format!("Go up: {}", reason);
+                                        }
+                                    }
+                                    ui_dirty = true;
+                                    continue;
+                                }
                                 if key == KEYSYM_SPACE {
                                     let selected = file_browser.entries()[browser_selected].clone();
                                     if selected.is_dir && !selected.is_parent_row {
@@ -590,7 +747,6 @@ fn main() -> Result<(), String> {
                         }
                         if screen.is_scrollback_active() {
                             screen.reset_scrollback();
-                            ui_dirty = true;
                         }
 
                         if (key == KEYSYM_TAB || key == KEYSYM_RIGHT) && !ghost_suffix.is_empty() {

@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
+use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,8 @@ pub enum DoubleClickAction {
     RunScriptConfirm,
     OpenConfigEditor,
     OpenWithXdg,
+    /// chmod +x regular files are not launched or handed to xdg-open from the overlay.
+    RefuseExecutableAutoOpen,
 }
 
 #[derive(Debug)]
@@ -41,6 +45,8 @@ pub struct FileBrowser {
     view_mode: ViewMode,
     expanded: HashSet<PathBuf>,
     entries: Vec<BrowserEntry>,
+    /// Set when the current `cwd` cannot be listed (permissions, I/O, etc.).
+    list_dir_error: Option<String>,
 }
 
 impl FileBrowser {
@@ -50,6 +56,7 @@ impl FileBrowser {
             view_mode: ViewMode::Flat,
             expanded: HashSet::new(),
             entries: Vec::new(),
+            list_dir_error: None,
         };
         browser.refresh();
         browser
@@ -67,6 +74,10 @@ impl FileBrowser {
         &self.entries
     }
 
+    pub fn list_dir_error(&self) -> Option<&str> {
+        self.list_dir_error.as_deref()
+    }
+
     pub fn toggle_view_mode(&mut self) {
         self.view_mode = match self.view_mode {
             ViewMode::Flat => ViewMode::Tree,
@@ -75,22 +86,24 @@ impl FileBrowser {
         self.refresh();
     }
 
-    pub fn navigate_to(&mut self, path: PathBuf) -> bool {
+    pub fn navigate_to(&mut self, path: PathBuf) -> Result<(), String> {
         if !path.is_dir() {
-            return false;
+            return Err("not a directory or unreachable".to_string());
         }
+        fs::read_dir(&path).map_err(|e| e.to_string())?;
         if self.cwd == path {
-            return true;
+            self.refresh();
+            return Ok(());
         }
         self.cwd = path;
         self.refresh();
-        true
+        Ok(())
     }
 
-    pub fn go_up(&mut self) -> bool {
+    pub fn go_up(&mut self) -> Result<(), String> {
         let parent = match self.cwd.parent() {
             Some(value) => value.to_path_buf(),
-            None => return false,
+            None => return Err("already at filesystem root".to_string()),
         };
         self.navigate_to(parent)
     }
@@ -109,6 +122,7 @@ impl FileBrowser {
 
     pub fn refresh(&mut self) {
         self.entries.clear();
+        self.list_dir_error = None;
         if let Some(parent) = self.cwd.parent() {
             self.entries.push(BrowserEntry {
                 path: parent.to_path_buf(),
@@ -126,20 +140,34 @@ impl FileBrowser {
     }
 
     fn build_flat(&mut self) {
-        for child in sorted_children(&self.cwd) {
-            self.entries.push(BrowserEntry {
-                name: display_name(&child),
-                is_dir: child.is_dir(),
-                path: child,
-                depth: 0,
-                is_parent_row: false,
-            });
+        match read_sorted_children(&self.cwd) {
+            Ok(children) => {
+                for child in children {
+                    self.entries.push(BrowserEntry {
+                        name: display_name(&child),
+                        is_dir: child.is_dir(),
+                        path: child,
+                        depth: 0,
+                        is_parent_row: false,
+                    });
+                }
+            }
+            Err(e) => {
+                self.list_dir_error = Some(e.to_string());
+            }
         }
     }
 
     fn build_tree(&mut self) {
-        for child in sorted_children(&self.cwd) {
-            self.push_tree_entry(child, 0);
+        match read_sorted_children(&self.cwd) {
+            Ok(children) => {
+                for child in children {
+                    self.push_tree_entry(child, 0);
+                }
+            }
+            Err(e) => {
+                self.list_dir_error = Some(e.to_string());
+            }
         }
     }
 
@@ -166,12 +194,13 @@ impl FileBrowser {
         if !recurse {
             return;
         }
-        for child in sorted_children(&path) {
+        for child in read_sorted_children(&path).unwrap_or_default() {
             self.push_tree_entry(child, depth + 1);
         }
     }
 
     pub fn preview_for(&self, path: &Path) -> PreviewKind {
+        let symlink_note = symlink_label(path);
         if path.is_dir() {
             let mut dirs = 0usize;
             let mut files = 0usize;
@@ -184,7 +213,11 @@ impl FileBrowser {
                     }
                 }
             }
-            return PreviewKind::FolderSummary(format!("{} dirs, {} files", dirs, files));
+            let mut summary = format!("{} dirs, {} files", dirs, files);
+            if let Some(note) = symlink_note {
+                summary = format!("{summary} ({note})");
+            }
+            return PreviewKind::FolderSummary(summary);
         }
 
         let name = path
@@ -193,15 +226,29 @@ impl FileBrowser {
             .unwrap_or_default()
             .to_ascii_lowercase();
         if is_config_name(&name) {
-            return PreviewKind::ConfigSummary(format!("Config file: {}", path.display()));
+            let mut line = format!("Config file: {}", path.display());
+            if let Some(note) = symlink_note {
+                line = format!("{line} ({note})");
+            }
+            return PreviewKind::ConfigSummary(line);
         }
         if is_script_name(&name) {
-            return PreviewKind::ScriptHint(format!("Script detected: {}", path.display()));
+            let mut line = format!("Script detected: {}", path.display());
+            if let Some(note) = symlink_note {
+                line = format!("{line} ({note})");
+            }
+            return PreviewKind::ScriptHint(line);
         }
 
         match read_text_preview(path, 8) {
             Some(preview) => PreviewKind::TextSnippet(preview),
-            None => PreviewKind::BinaryHint(format!("Binary/unknown file: {}", path.display())),
+            None => {
+                let mut line = format!("Binary/unknown file: {}", path.display());
+                if let Some(note) = symlink_note {
+                    line = format!("{line} ({note})");
+                }
+                PreviewKind::BinaryHint(line)
+            }
         }
     }
 
@@ -221,6 +268,9 @@ impl FileBrowser {
         if is_config_name(&name) {
             return DoubleClickAction::OpenConfigEditor;
         }
+        if file_is_executable_non_dir(path) {
+            return DoubleClickAction::RefuseExecutableAutoOpen;
+        }
         DoubleClickAction::OpenWithXdg
     }
 }
@@ -231,15 +281,30 @@ fn display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn sorted_children(path: &Path) -> Vec<PathBuf> {
+fn read_sorted_children(path: &Path) -> Result<Vec<PathBuf>, io::Error> {
     let mut children = Vec::new();
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            children.push(entry.path());
-        }
+    for entry in fs::read_dir(path)? {
+        children.push(entry?.path());
     }
     children.sort_by(|left, right| compare_entries(left, right));
-    children
+    Ok(children)
+}
+
+fn symlink_label(path: &Path) -> Option<&'static str> {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.file_type().is_symlink())
+        .map(|_| "symlink")
+}
+
+fn file_is_executable_non_dir(path: &Path) -> bool {
+    let Some(meta) = fs::metadata(path).ok() else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    meta.permissions().mode() & 0o111 != 0
 }
 
 fn compare_entries(left: &Path, right: &Path) -> Ordering {

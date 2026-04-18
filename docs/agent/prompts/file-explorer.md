@@ -14,6 +14,8 @@ StratOS has **no standalone file manager application**. The **in-terminal file b
 
 **Crate docs:** `stratterm/README.md` (shortcuts, implemented vs not complete).
 
+**User-facing redirect (“where is the file explorer?”):** `docs/human/file-explorer.md`.
+
 **Primary code:**
 
 - `stratterm/src/file_browser.rs` — browser logic, selection, modes, preview policy.

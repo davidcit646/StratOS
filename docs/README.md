@@ -1,12 +1,14 @@
 # StratOS documentation
 
-All long-form specs, contracts, and the coding checklist live under **`docs/human/`**.  
-Task-oriented, file-heavy briefs for automation and agents live under **`docs/agent/`**.
+All long-form specs, contracts, and the coding checklist live under `**docs/human/**`.  
+Task-oriented, file-heavy briefs for automation and agents live under `**docs/agent/**`.
 
-| Audience | Path | Purpose |
-|----------|------|---------|
-| **People** | [human/README.md](human/README.md) | Index of narrative docs and contracts |
+
+| Audience        | Path                               | Purpose                                                       |
+| --------------- | ---------------------------------- | ------------------------------------------------------------- |
+| **People**      | [human/README.md](human/README.md) | Index of narrative docs and contracts                         |
 | **Agents / CI** | [agent/README.md](agent/README.md) | Index of operational briefs (paths, invariants, do-not rules) |
+
 
 ## Quick links
 
@@ -24,7 +26,7 @@ Task-oriented, file-heavy briefs for automation and agents live under **`docs/ag
 ### Human-readable (components)
 
 - [stratboot.md](human/stratboot.md) · [stratman.md](human/stratman.md) · [stratvm.md](human/stratvm.md) · [stratpanel.md](human/stratpanel.md)  
-- [stratterm.md](human/stratterm.md) · [spotlite.md](human/spotlite.md) · [stratmon.md](human/stratmon.md) · [stratsup-and-sysroot.md](human/stratsup-and-sysroot.md)
+- [stratterm.md](human/stratterm.md) · [file-explorer.md](human/file-explorer.md) (use Stratterm for browsing files) · [spotlite.md](human/spotlite.md) · [stratmon.md](human/stratmon.md) · [stratsup-and-sysroot.md](human/stratsup-and-sysroot.md)
 
 ### Agent-readable (components + roles)
 
@@ -33,6 +35,7 @@ Task-oriented, file-heavy briefs for automation and agents live under **`docs/ag
 - [agent/ai-roles.md](agent/ai-roles.md) — optional Auditor / Builder / coordinator prompts.
 - [agent/prompts/panel-window-chrome.md](agent/prompts/panel-window-chrome.md) — panel / decorations task prompt.
 - [agent/prompts/file-explorer.md](agent/prompts/file-explorer.md) — stratterm file browser / indexer task prompt.
+- [agent/prompts/live-iso.md](agent/prompts/live-iso.md) — live ISO (`mkosi`) + road to §17 installer.
 
 ### Elsewhere in the repo
 

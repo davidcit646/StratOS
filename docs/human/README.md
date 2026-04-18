@@ -34,6 +34,7 @@ These documents are written for **people**: onboarding, architecture, contracts,
 | [stratvm.md](stratvm.md)                           | Wayland compositor (stratwm), IPC, layers.         |
 | [stratpanel.md](stratpanel.md)                     | Top panel, layer shell client, `panel.conf`.       |
 | [stratterm.md](stratterm.md)                       | Terminal, Wayland client, PTY.                     |
+| [file-explorer.md](file-explorer.md)             | File browsing → use Stratterm (`F7`); no separate app. |
 | [spotlite.md](spotlite.md)                         | Search/indexer vision vs what ships today.         |
 | [stratmon.md](stratmon.md)                         | Update staging, manifest, FIEMAP.                  |
 | [stratsup-and-sysroot.md](stratsup-and-sysroot.md) | Legacy supervisor crate + initramfs/root skeleton. |

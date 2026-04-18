@@ -38,6 +38,7 @@ Dense, **operational** briefs: file paths, entrypoints, invariants, and “do no
 | ---------------------------------------------------------------- | ---------------------------------------- |
 | [prompts/panel-window-chrome.md](prompts/panel-window-chrome.md) | Panel / decorations follow-up          |
 | [prompts/file-explorer.md](prompts/file-explorer.md)             | Stratterm file browser + indexer / Phase 12 |
+| [prompts/live-iso.md](prompts/live-iso.md)                       | Bootable live ISO (`mkosi`), path to §17 installer |
 
 
 When a brief disagrees with **[stratos-design.md](stratos-design.md)** or **[../human/stratos-design.md](../human/stratos-design.md)**, the **human** design doc wins unless the code has deliberately superseded it (then update the human doc).

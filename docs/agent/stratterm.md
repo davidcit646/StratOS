@@ -18,4 +18,6 @@
 ## Human / crate README
 
 - [../human/stratterm.md](../human/stratterm.md)
+- [../human/file-explorer.md](../human/file-explorer.md) — redirect “file explorer” users to Stratterm
 - [../../stratterm/README.md](../../stratterm/README.md)
+
