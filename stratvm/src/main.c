@@ -1819,10 +1819,19 @@ int main(void) {
     server.cursor = wlr_cursor_create();
     wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
     server.cursor_manager = wlr_xcursor_manager_create(NULL, 24);
-    wlr_xcursor_manager_load(server.cursor_manager, 1);
+    if (!server.cursor_manager) {
+        fprintf(stderr, "stratwm: failed to create cursor manager\n");
+    } else if (!wlr_xcursor_manager_load(server.cursor_manager, 1)) {
+        fprintf(stderr, "stratwm: failed to load cursor theme\n");
+    } else {
+        fprintf(stderr, "stratwm: cursor theme loaded\n");
+    }
 
     /* Set default cursor image */
-    wlr_cursor_set_xcursor(server.cursor, server.cursor_manager, "default");
+    if (server.cursor_manager) {
+        wlr_cursor_set_xcursor(server.cursor, server.cursor_manager, "default");
+        fprintf(stderr, "stratwm: set default cursor\n");
+    }
 
     server.cursor_motion.notify = cursor_motion_notify;
     wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
@@ -2105,6 +2114,9 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
                 wlr_cursor_move(dev->server->cursor, NULL, accum_dx, accum_dy);
                 wlr_seat_pointer_notify_motion(dev->server->seat, motion.time_msec,
                     dev->server->cursor->x, dev->server->cursor->y);
+
+                fprintf(stderr, "stratwm: cursor moved to %.0f,%.0f\n",
+                        dev->server->cursor->x, dev->server->cursor->y);
 
                 accum_dx = 0;
                 accum_dy = 0;
