@@ -523,18 +523,7 @@ static void tile_reflow_scene(struct stratwm_tile *tile) {
             wlr_scene_rect_set_size(tile->view->titlebar_bg, tile->geometry.width, 24);
             wlr_scene_node_set_position(&tile->view->titlebar_bg->node, 0, -24);
         }
-        if (tile->view->close_button) {
-            wlr_scene_node_set_position(&tile->view->close_button->node, 
-                tile->geometry.width - 20, -22);
-        }
-        if (tile->view->max_button) {
-            wlr_scene_node_set_position(&tile->view->max_button->node, 
-                tile->geometry.width - 45, -22);
-        }
-        if (tile->view->min_button) {
-            wlr_scene_node_set_position(&tile->view->min_button->node, 
-                tile->geometry.width - 70, -22);
-        }
+        update_titlebar_buttons(tile->view, tile->geometry.width);
     }
 
     if (tile->left) tile_reflow_scene(tile->left);
@@ -660,40 +649,61 @@ static bool point_in_titlebar_button(struct wlr_scene_rect *button,
     if (!button) return false;
     int bx = button->node.x;
     int by = button->node.y;
-    return view_x >= bx && view_x < bx + 20 && view_y >= by && view_y < by + 20;
+    return view_x >= bx && view_x < bx + 16 && view_y >= by && view_y < by + 16;
+}
+
+/* Update titlebar button positions based on current width */
+static void update_titlebar_buttons(struct stratwm_view *view, int width) {
+    if (!view) return;
+
+    int padding = 8;       /* Right edge padding */
+    int btn_size = 16;     /* Button size */
+    int btn_gap = 4;       /* Gap between buttons */
+    int y_pos = -20;       /* Y position (centered in 24px titlebar) */
+
+    int close_x = width - padding - btn_size;
+    int max_x = close_x - btn_size - btn_gap;
+    int min_x = max_x - btn_size - btn_gap;
+
+    if (view->close_button) {
+        wlr_scene_node_set_position(&view->close_button->node, close_x, y_pos);
+        wlr_scene_rect_set_size(view->close_button, btn_size, btn_size);
+    }
+    if (view->max_button) {
+        wlr_scene_node_set_position(&view->max_button->node, max_x, y_pos);
+        wlr_scene_rect_set_size(view->max_button, btn_size, btn_size);
+    }
+    if (view->min_button) {
+        wlr_scene_node_set_position(&view->min_button->node, min_x, y_pos);
+        wlr_scene_rect_set_size(view->min_button, btn_size, btn_size);
+    }
 }
 
 /* Titlebar creation and management (Phase 8.8) */
 static void create_titlebar(struct stratwm_view *view) {
     if (!view) return;
 
-    /* Titlebar background: dark blue-gray, spans full window width, 24px height */
-    float bg_color[4] = {0.15f, 0.15f, 0.25f, 1.0f};  /* dark blue-gray */
-    view->titlebar_bg = wlr_scene_rect_create(view->scene_tree, 800, 24, bg_color);
+    /* Titlebar background: dark gradient-like, 24px height */
+    float bg_color[4] = {0.12f, 0.13f, 0.18f, 1.0f};  /* Dark slate */
+    view->titlebar_bg = wlr_scene_rect_create(view->scene_tree, 100, 24, bg_color);
     if (view->titlebar_bg) {
         wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -24);  /* Above window */
     }
 
-    /* Close button: red, 20x20px, positioned at top-right */
-    float close_color[4] = {0.8f, 0.2f, 0.2f, 1.0f};  /* red */
-    view->close_button = wlr_scene_rect_create(view->scene_tree, 20, 20, close_color);
-    if (view->close_button) {
-        wlr_scene_node_set_position(&view->close_button->node, 780, -22);  /* Top-right corner */
-    }
+    /* Close button: vibrant red */
+    float close_color[4] = {0.95f, 0.25f, 0.25f, 1.0f};
+    view->close_button = wlr_scene_rect_create(view->scene_tree, 16, 16, close_color);
 
-    /* Maximize button: green, 20x20px, left of close */
-    float max_color[4] = {0.2f, 0.8f, 0.2f, 1.0f};  /* green */
-    view->max_button = wlr_scene_rect_create(view->scene_tree, 20, 20, max_color);
-    if (view->max_button) {
-        wlr_scene_node_set_position(&view->max_button->node, 755, -22);  /* Left of close */
-    }
+    /* Maximize button: vibrant green */
+    float max_color[4] = {0.25f, 0.85f, 0.35f, 1.0f};
+    view->max_button = wlr_scene_rect_create(view->scene_tree, 16, 16, max_color);
 
-    /* Minimize button: yellow, 20x20px, left of maximize */
-    float min_color[4] = {0.8f, 0.8f, 0.2f, 1.0f};  /* yellow */
-    view->min_button = wlr_scene_rect_create(view->scene_tree, 20, 20, min_color);
-    if (view->min_button) {
-        wlr_scene_node_set_position(&view->min_button->node, 730, -22);  /* Left of maximize */
-    }
+    /* Minimize button: vibrant yellow */
+    float min_color[4] = {0.95f, 0.85f, 0.25f, 1.0f};
+    view->min_button = wlr_scene_rect_create(view->scene_tree, 16, 16, min_color);
+
+    /* Initial button positioning (will be updated when window sizes) */
+    update_titlebar_buttons(view, 100);
 }
 
 static void destroy_titlebar(struct stratwm_view *view) {
@@ -937,15 +947,7 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
             wlr_scene_rect_set_size(view->titlebar_bg, 800, 24);
             wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -24);
         }
-        if (view->close_button) {
-            wlr_scene_node_set_position(&view->close_button->node, 780, -22);
-        }
-        if (view->max_button) {
-            wlr_scene_node_set_position(&view->max_button->node, 755, -22);
-        }
-        if (view->min_button) {
-            wlr_scene_node_set_position(&view->min_button->node, 730, -22);
-        }
+        update_titlebar_buttons(view, 800);
     } else {
         /* Tiled window: insert into BSP tree */
         if (!ws->root) {
@@ -1190,8 +1192,9 @@ static void toggle_float(struct stratwm_server *server, struct stratwm_view *vie
         /* Position floating window: center of screen or 100,100 offset */
         struct stratwm_output *output = NULL;
         wl_list_for_each(output, &server->outputs, link) {
+            int zone = get_top_exclusive_zone(server);
             view->float_x = 100;
-            view->float_y = 100;
+            view->float_y = zone + 20;  /* Below panel with 20px padding */
             break;
         }
         wlr_scene_node_set_position(&view->scene_tree->node,
@@ -1208,6 +1211,9 @@ static void toggle_float(struct stratwm_server *server, struct stratwm_view *vie
                 output_box.height = output->wlr_output->height;
                 break;
             }
+            int zone = get_top_exclusive_zone(server);
+            output_box.y += zone;
+            output_box.height -= zone;
             ws->root = tile_new(output_box);
         }
 
@@ -1222,18 +1228,20 @@ static void toggle_float(struct stratwm_server *server, struct stratwm_view *vie
 static void maximize_float_window(struct stratwm_server *server, struct stratwm_view *view) {
     if (!view || !view->is_floating) return;
 
-    /* Expand to full output size */
+    /* Expand to fill usable area below panel */
     struct stratwm_output *output = NULL;
     wl_list_for_each(output, &server->outputs, link) {
+        int zone = get_top_exclusive_zone(server);
+        
         /* Position at output top-left in layout coordinates */
         double ox = 0.0, oy = 0.0;
         wlr_output_layout_output_coords(server->output_layout, output->wlr_output, &ox, &oy);
         view->float_x = (int)ox;
-        view->float_y = (int)oy;
+        view->float_y = (int)oy + zone;  /* Below panel */
         
-        /* Resize surface to output dimensions */
+        /* Resize surface to usable dimensions */
         wlr_xdg_toplevel_set_size(view->xdg_toplevel,
-            output->wlr_output->width, output->wlr_output->height);
+            output->wlr_output->width, output->wlr_output->height - zone);
         
         wlr_scene_node_set_position(&view->scene_tree->node,
             view->float_x, view->float_y);

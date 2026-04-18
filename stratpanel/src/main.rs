@@ -367,6 +367,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Only render and commit if something changed
         if needs_commit {
+            // Clear full panel background first
+            {
+                let data = shm_buffer.data_mut();
+                let color = ((config.panel.opacity * 255.0) as u32) << 24 | 0x2B2B2B;
+                let bytes = color.to_le_bytes();
+                for chunk in data.chunks_exact_mut(4) {
+                    chunk[0] = bytes[0];
+                    chunk[1] = bytes[1];
+                    chunk[2] = bytes[2];
+                    chunk[3] = bytes[3];
+                }
+            }
+
             // Render text input field on the left side
             let input_x = 8;
             let input_y = 2;
