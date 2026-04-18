@@ -25,14 +25,14 @@ while [ "$#" -gt 0 ]; do
             CLEAN_BUILD=1
             shift
             ;;
-        --skip-kernel|-k)
+        -s|--skip-kernel)
             SKIP_KERNEL=1
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--clean] [--skip-kernel]"
-            echo "  --clean        Clean build (rebuild all from scratch)"
-            echo "  --skip-kernel  Skip kernel rebuild (faster)"
+            echo "Usage: $0 [-c] [-s]"
+            echo "  -c, --clean        Clean build (rebuild all from scratch)"
+            echo "  -s, --skip-kernel  Skip kernel rebuild (faster)"
             exit 0
             ;;
         *)
@@ -114,7 +114,7 @@ if [ $SKIP_KERNEL -eq 0 ]; then
     
     log_ok "Kernel built -> $PHASE4_DIR/vmlinuz"
 else
-    log_info "Skipping kernel build (--skip-kernel)"
+    log_info "Skipping kernel build (-s)"
 fi
 
 # ============================================================================
