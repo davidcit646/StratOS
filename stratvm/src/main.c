@@ -1988,6 +1988,9 @@ static struct stratwm_evdev_device *evdev_device_create(
     bool has_rel = libevdev_has_event_type(dev->evdev, EV_REL);
     bool has_abs = libevdev_has_event_type(dev->evdev, EV_ABS);
 
+    fprintf(stderr, "stratwm: %s caps: keys=%d rel=%d abs=%d\n",
+            path, has_keys, has_rel, has_abs);
+
     dev->is_keyboard = has_keys && !has_rel && !has_abs;
     dev->is_pointer = has_rel || (has_abs && !has_keys);
 
@@ -2038,6 +2041,13 @@ static struct stratwm_evdev_device *evdev_device_create(
     dev->event_source = wl_event_loop_add_fd(
         wl_display_get_event_loop(server->wl_display),
         dev->fd, WL_EVENT_READABLE, evdev_device_event, dev);
+
+    if (!dev->event_source) {
+        fprintf(stderr, "stratwm: failed to add %s to event loop\n", path);
+        goto fail;
+    }
+
+    fprintf(stderr, "stratwm: added %s to event loop (fd=%d)\n", path, dev->fd);
 
     wl_list_insert(&g_input_manager.devices, &dev->link);
     goto success;
@@ -2161,6 +2171,11 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
         }
         /* Handle pointer motion (accumulate for SYN_REPORT) */
         else if (dev->is_pointer && ev.type == EV_REL) {
+            static int rel_count = 0;
+            rel_count++;
+            if (rel_count <= 20) {
+                fprintf(stderr, "stratwm: REL event code=%d value=%d\n", ev.code, ev.value);
+            }
             if (ev.code == REL_X) {
                 accum_dx += ev.value;
             } else if (ev.code == REL_Y) {

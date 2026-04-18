@@ -64,6 +64,8 @@ unsafe fn mount_filesystems() {
     ensure_dir(b"/home\0");
     ensure_dir(b"/var\0");
     ensure_dir(b"/config/var\0");
+    ensure_dir(b"/etc\0");
+    ensure_dir(b"/config/etc\0");
 
     mount_best_effort(b"proc\0", b"/proc\0", b"proc\0", 0, core::ptr::null());
     mount_best_effort(b"sys\0", b"/sys\0", b"sysfs\0", 0, core::ptr::null());
@@ -72,6 +74,7 @@ unsafe fn mount_filesystems() {
     mount_best_effort(b"/dev/sda6\0", b"/apps\0", b"ext4\0", 0, core::ptr::null());
     mount_best_effort(b"/dev/sda7\0", b"/home\0", b"btrfs\0", 0, core::ptr::null());
     mount_best_effort(b"/config/var\0", b"/var\0", b"", libc::MS_BIND, core::ptr::null());
+    mount_best_effort(b"/config/etc\0", b"/etc\0", b"", libc::MS_BIND, core::ptr::null());
     ensure_dir(b"/var/cache\0");
     ensure_dir(b"/var/cache/fontconfig\0");
     ensure_dir(b"/dev/pts\0");

@@ -335,6 +335,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cursor blink state
     let mut cursor_visible = true;
     let mut last_cursor_blink = Instant::now();
+    
+    // Track last rendered state to avoid unnecessary commits
+    let mut last_clock_text = String::new();
+    let mut needs_commit = true; // Initial render
 
     // Step 9: Main event loop
     loop {
@@ -342,75 +346,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if last_workspace_fetch.elapsed() >= Duration::from_secs(1) {
             workspaces = ipc.get_workspaces();
             last_workspace_fetch = Instant::now();
+            needs_commit = true; // Workspace buttons changed
         }
 
         // Blink cursor
         if last_cursor_blink.elapsed() >= Duration::from_millis(500) {
             cursor_visible = !cursor_visible;
             last_cursor_blink = Instant::now();
-        }
-
-        // Render text input field on the left side
-        let input_x = 8;
-        let input_y = 2;
-        let input_w = 200;
-        let input_h = panel_height - 4;
-        {
-            let data = shm_buffer.data_mut();
-            // Input field background
-            let input_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B;
-            fill_rect(data, stride, panel_width as i32, panel_height, input_x, input_y, input_w, input_h, input_bg);
-
-            // Render input text
-            let display_text = text_input.display_text();
-            let text_y = input_y + (input_h - 7) / 2;
-            draw_text(data, stride, panel_width as i32, panel_height, input_x + 4, text_y, &display_text, 0xFFFFFFFF);
-
-            // Render blinking cursor
-            if keyboard_focused && cursor_visible {
-                let cursor_x = input_x + 4 + text_input.cursor_pixel_offset();
-                fill_rect(data, stride, panel_width as i32, panel_height, cursor_x, text_y, 1, 9, 0xFFFFFFFF);
+            if keyboard_focused {
+                needs_commit = true; // Cursor visibility changed
             }
         }
 
         clock.tick(&config.clock.format, config.clock.show_date);
-        let text = clock.text();
-        let text_width = text.len() as i32 * 6;
-        let x = panel_width as i32 - text_width - 8;
-        let y = ((panel_height - 7) / 2) as i32;
-        {
-            let data = shm_buffer.data_mut();
-            draw_text(data, stride, panel_width as i32, panel_height, x, y, text, 0xFFFFFFFF);
+        let clock_text = clock.text();
+        if clock_text != last_clock_text {
+            last_clock_text = clock_text.to_string();
+            needs_commit = true; // Clock changed
         }
 
-        // Render workspace buttons in center
-        let button_width = 40;
-        let button_height = panel_height - 4;
-        let total_width = workspaces.len() as i32 * (button_width + 4);
-        let start_x = (panel_width as i32 - total_width) / 2;
+        // Only render and commit if something changed
+        if needs_commit {
+            // Render text input field on the left side
+            let input_x = 8;
+            let input_y = 2;
+            let input_w = 200;
+            let input_h = panel_height - 4;
+            {
+                let data = shm_buffer.data_mut();
+                // Input field background
+                let input_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B;
+                fill_rect(data, stride, panel_width as i32, panel_height, input_x, input_y, input_w, input_h, input_bg);
 
-        {
-            let data = shm_buffer.data_mut();
-            for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
-                let bx = start_x + (i as i32 * (button_width + 4));
-                let by = 2;
+                // Render input text
+                let display_text = text_input.display_text();
+                let text_y = input_y + (input_h - 7) / 2;
+                draw_text(data, stride, panel_width as i32, panel_height, input_x + 4, text_y, &display_text, 0xFFFFFFFF);
 
-                let button_color = if *focused {
-                    ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
-                } else {
-                    ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
-                };
-
-                fill_rect(data, stride, panel_width as i32, panel_height, bx, by, button_width, button_height, button_color);
-
-                let text_x = bx + (button_width - name.len() as i32 * 6) / 2;
-                let text_y = by + (button_height - 7) / 2;
-                draw_text(data, stride, panel_width as i32, panel_height, text_x, text_y, name, 0xFFFFFFFF);
+                // Render blinking cursor
+                if keyboard_focused && cursor_visible {
+                    let cursor_x = input_x + 4 + text_input.cursor_pixel_offset();
+                    fill_rect(data, stride, panel_width as i32, panel_height, cursor_x, text_y, 1, 9, 0xFFFFFFFF);
+                }
             }
-        }
 
-        WlSurface::new(surface_id).damage(0, 0, panel_width as i32, panel_height, client.socket());
-        WlSurface::new(surface_id).commit(client.socket());
+            let text_width = last_clock_text.len() as i32 * 6;
+            let x = panel_width as i32 - text_width - 8;
+            let y = ((panel_height - 7) / 2) as i32;
+            {
+                let data = shm_buffer.data_mut();
+                draw_text(data, stride, panel_width as i32, panel_height, x, y, &last_clock_text, 0xFFFFFFFF);
+            }
+
+            // Render workspace buttons in center
+            let button_width = 40;
+            let button_height = panel_height - 4;
+            let total_width = workspaces.len() as i32 * (button_width + 4);
+            let start_x = (panel_width as i32 - total_width) / 2;
+
+            {
+                let data = shm_buffer.data_mut();
+                for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
+                    let bx = start_x + (i as i32 * (button_width + 4));
+                    let by = 2;
+
+                    let button_color = if *focused {
+                        ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
+                    } else {
+                        ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
+                    };
+
+                    fill_rect(data, stride, panel_width as i32, panel_height, bx, by, button_width, button_height, button_color);
+
+                    let text_x = bx + (button_width - name.len() as i32 * 6) / 2;
+                    let text_y = by + (button_height - 7) / 2;
+                    draw_text(data, stride, panel_width as i32, panel_height, text_x, text_y, name, 0xFFFFFFFF);
+                }
+            }
+
+            WlSurface::new(surface_id).damage(0, 0, panel_width as i32, panel_height, client.socket());
+            WlSurface::new(surface_id).commit(client.socket());
+            needs_commit = false;
+        }
 
         for event in client.poll()? {
             match event {

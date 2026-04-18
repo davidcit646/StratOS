@@ -143,6 +143,13 @@ int main(void) {
     mount_or_die(config_dev, "/config", "ext4", 0, NULL, "mount /config");
     log_status("mounted /config");
 
+    /* Ensure /config/etc exists — ext4 is empty on first boot */
+    if (mkdir("/config/etc", 0755) < 0 && errno != EEXIST) {
+        die_errno("mkdir /config/etc");
+    }
+    mount_or_die("/config/etc", "/etc", NULL, MS_BIND, NULL, "bind /etc");
+    log_status("bind-mounted /etc");
+
     char apps_dev[128];
     read_apps_device(apps_dev, sizeof(apps_dev));
     mount_or_die(apps_dev, "/apps", "ext4", 0, NULL, "mount /apps");

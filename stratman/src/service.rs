@@ -96,6 +96,9 @@ pub fn load_and_run_all() -> Result<(), String> {
     let stratwm_toml = include_str!("../manifests/stratwm.toml");
     manifests.push(parse_manifest(stratwm_toml)?);
 
+    let strat_network_toml = include_str!("../manifests/strat-network.toml");
+    manifests.push(parse_manifest(strat_network_toml)?);
+
     let validate_boot_toml = include_str!("../manifests/validate-boot.toml");
     manifests.push(parse_manifest(validate_boot_toml)?);
 
