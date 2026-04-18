@@ -266,9 +266,9 @@ int main(void) {
     setenv("WAYLAND_DEBUG", "1", 1);
     unsetenv("LIBSEAT_BACKEND");
     unsetenv("SEATD_SOCK");
-    setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
     setenv("WLR_RENDERER_ALLOW_SOFTWARE", "1", 1);
     setenv("WLR_RENDERER", "pixman", 1);
+    setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
     setenv("LD_LIBRARY_PATH", "/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu", 1);
     probe_file("/bin/stratwm");
     probe_file("/bin/sh");
@@ -329,6 +329,15 @@ int main(void) {
 
     run_once_if_present("/bin/strat-validate-boot");
     run_once_if_present("/bin/strat-indexer-boot.sh");
+
+    // Wait for input devices so libinput can discover them.
+    // QEMU PS/2 devices appear late; without udev, wlroots can't hotplug.
+    ensure_dir("/dev/input");
+    if (wait_for_socket("/dev/input/event0", 100, 20) == 0) {
+        log_status("input devices ready");
+    } else {
+        log_status("input devices not found, continuing anyway");
+    }
 
     // Keep PID 1 alive: spawn boot target as a child and observe exit status.
     // If stratwm exits quickly, fall back to a shell instead of panicking.

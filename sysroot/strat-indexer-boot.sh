@@ -17,8 +17,6 @@ if [ ! -x /bin/stratterm-indexer ]; then
     exit 0
 fi
 
-mkdir -p /run
-
 if [ -f "$PID_FILE" ]; then
     old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [ -n "${old_pid:-}" ] && kill -0 "$old_pid" 2>/dev/null; then

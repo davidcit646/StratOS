@@ -5,6 +5,7 @@ enum ParserState {
     Ground,
     Escape,
     CSI,
+    #[allow(dead_code)]
     CSIParam,
     OSC,
 }

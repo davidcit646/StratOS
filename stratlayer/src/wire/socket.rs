@@ -49,6 +49,8 @@ impl WaylandSocket {
 
         let socket_path = if display.starts_with('/') {
             display
+        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            format!("{}/{}", runtime_dir, display)
         } else {
             format!("/run/user/{}/{}", nix::unistd::getuid(), display)
         };

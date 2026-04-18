@@ -33,7 +33,6 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
-#include <wlr/types/wlr_scene_layer_surface_v1.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 
@@ -107,20 +106,17 @@ static void spawn_terminal(void) {
 
 static void spawn_autostart(const char *path) {
     if (access(path, X_OK) != 0) {
-#ifdef DEBUG
         fprintf(stderr, "stratwm: autostart missing or not executable: %s\n", path);
-#endif
         return;
     }
     pid_t pid = fork();
     if (pid < 0) {
-#ifdef DEBUG
         fprintf(stderr, "stratwm: autostart fork failed for %s: %s\n", path, strerror(errno));
-#endif
         return;
     }
     if (pid == 0) {
         setenv("WAYLAND_DISPLAY", "wayland-0", 1);
+        setenv("XDG_RUNTIME_DIR", "/run", 1);
         setenv("PATH", "/bin:/usr/bin:/sbin:/usr/sbin", 1);
         setenv("SHELL", "/bin/sh", 1);
         setenv("HOME", "/home", 1);
@@ -130,14 +126,10 @@ static void spawn_autostart(const char *path) {
         setenv("XKB_CONFIG_ROOT", "/usr/share/X11/xkb", 1);
         char *const argv[] = {(char *)path, NULL};
         execv(path, argv);
-#ifdef DEBUG
         fprintf(stderr, "stratwm: autostart exec failed for %s: %s\n", path, strerror(errno));
-#endif
         _exit(127);
     }
-#ifdef DEBUG
     fprintf(stderr, "stratwm: autostart spawned %s (pid=%ld)\n", path, (long)pid);
-#endif
     /* Surface fast-fail cases to logs when autostart exits before mapping. */
     struct timespec delay = {.tv_sec = 0, .tv_nsec = 200 * 1000 * 1000};
     (void)nanosleep(&delay, NULL);
@@ -145,15 +137,11 @@ static void spawn_autostart(const char *path) {
     pid_t waited = waitpid(pid, &status, WNOHANG);
     if (waited == pid) {
         if (WIFEXITED(status)) {
-#ifdef DEBUG
             fprintf(stderr, "stratwm: autostart exited early status=%d (pid=%ld)\n",
                 WEXITSTATUS(status), (long)pid);
-#endif
         } else if (WIFSIGNALED(status)) {
-#ifdef DEBUG
             fprintf(stderr, "stratwm: autostart died early signal=%d (pid=%ld)\n",
                 WTERMSIG(status), (long)pid);
-#endif
         }
     }
 }
@@ -694,22 +682,44 @@ static void destroy_titlebar(struct stratwm_view *view) {
 }
 
 /* Layer shell handlers (Phase 24a) */
+static void layer_surface_configure(struct stratwm_layer_surface *layer) {
+    struct wlr_output *output = layer->layer_surface->output;
+    if (!output) return;
+
+    struct wlr_box full_area = { 0 };
+    wlr_output_effective_resolution(output, &full_area.width, &full_area.height);
+    struct wlr_box usable_area = full_area;
+
+    wlr_scene_layer_surface_v1_configure(layer->scene_layer_surface,
+        &full_area, &usable_area);
+}
+
+static void layer_surface_commit_notify(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct stratwm_layer_surface *layer = wl_container_of(listener, layer, commit);
+    layer_surface_configure(layer);
+}
+
 static void layer_surface_map_notify(struct wl_listener *listener, void *data) {
+    (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, map);
     wlr_scene_node_set_enabled(&layer->scene_tree->node, true);
     tile_reflow_scene(layer->server->workspaces[layer->server->current_workspace].root);
 }
 
 static void layer_surface_unmap_notify(struct wl_listener *listener, void *data) {
+    (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, unmap);
     wlr_scene_node_set_enabled(&layer->scene_tree->node, false);
     tile_reflow_scene(layer->server->workspaces[layer->server->current_workspace].root);
 }
 
 static void layer_surface_destroy_notify(struct wl_listener *listener, void *data) {
+    (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, destroy);
     wl_list_remove(&layer->map.link);
     wl_list_remove(&layer->unmap.link);
+    wl_list_remove(&layer->commit.link);
     wl_list_remove(&layer->destroy.link);
     wl_list_remove(&layer->new_popup.link);
     wl_list_remove(&layer->link);
@@ -717,12 +727,25 @@ static void layer_surface_destroy_notify(struct wl_listener *listener, void *dat
 }
 
 static void layer_surface_new_popup_notify(struct wl_listener *listener, void *data) {
+    (void)listener;
+    (void)data;
     /* popups handled by wlroots scene graph automatically */
 }
 
 static void server_new_layer_surface_notify(struct wl_listener *listener, void *data) {
     struct stratwm_server *server = wl_container_of(listener, server, new_layer_surface);
     struct wlr_layer_surface_v1 *wlr_layer_surface = data;
+
+    /* Assign an output if client didn't request one — required before first configure. */
+    if (!wlr_layer_surface->output) {
+        if (wl_list_empty(&server->outputs)) {
+            wlr_layer_surface_v1_destroy(wlr_layer_surface);
+            return;
+        }
+        struct stratwm_output *output = wl_container_of(
+            server->outputs.next, output, link);
+        wlr_layer_surface->output = output->wlr_output;
+    }
 
     struct stratwm_layer_surface *layer = calloc(1, sizeof(*layer));
     if (!layer) return;
@@ -736,13 +759,16 @@ static void server_new_layer_surface_notify(struct wl_listener *listener, void *
         free(layer);
         return;
     }
-    layer->scene_tree = &layer->scene_layer_surface->tree;
+    layer->scene_tree = layer->scene_layer_surface->tree;
 
     layer->map.notify = layer_surface_map_notify;
     wl_signal_add(&wlr_layer_surface->surface->events.map, &layer->map);
 
     layer->unmap.notify = layer_surface_unmap_notify;
     wl_signal_add(&wlr_layer_surface->surface->events.unmap, &layer->unmap);
+
+    layer->commit.notify = layer_surface_commit_notify;
+    wl_signal_add(&wlr_layer_surface->surface->events.commit, &layer->commit);
 
     layer->destroy.notify = layer_surface_destroy_notify;
     wl_signal_add(&wlr_layer_surface->events.destroy, &layer->destroy);
@@ -967,6 +993,7 @@ static void view_commit_notify(struct wl_listener *listener, void *data) {
     }
 
     uint32_t serial = wlr_xdg_toplevel_set_size(view->xdg_toplevel, 0, 0);
+    (void)serial;
 #ifdef DEBUG
     fprintf(stderr, "stratwm: initial configure queued after commit serial=%u\n", serial);
 #endif
@@ -1421,7 +1448,7 @@ static void cursor_button_notify(struct wl_listener *listener, void *data) {
     struct wlr_pointer_button_event *event = data;
 
     /* Check for titlebar button clicks (Phase 8.8) */
-    if (event->state == WLR_BUTTON_PRESSED && server->focused_view) {
+    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && server->focused_view) {
         struct stratwm_view *view = server->focused_view;
         double cursor_x = server->cursor->x;
         double cursor_y = server->cursor->y;
@@ -1537,9 +1564,14 @@ static void ipc_dispatch_command(struct stratwm_server *server, const char *cmd,
         ipc_send(fd, "OK pong\n");
     } else if (strcmp(cmd, "get focused") == 0) {
         struct stratwm_view *view = server->focused_view;
-        if (view && view->xdg_toplevel->base->client->pid > 0) {
+        pid_t pid = 0;
+        if (view) {
+            struct wl_client *wl_client = wl_resource_get_client(view->xdg_toplevel->base->resource);
+            wl_client_get_credentials(wl_client, &pid, NULL, NULL);
+        }
+        if (view && pid > 0) {
             char buf[64];
-            snprintf(buf, sizeof(buf), "OK %d\n", view->xdg_toplevel->base->client->pid);
+            snprintf(buf, sizeof(buf), "OK %d\n", pid);
             ipc_send(fd, buf);
         } else {
             ipc_send(fd, "OK 0\n");
@@ -1572,7 +1604,10 @@ static void ipc_dispatch_command(struct stratwm_server *server, const char *cmd,
         struct stratwm_view *v;
         bool found = false;
         wl_list_for_each(v, &server->views, link) {
-            if (v->xdg_toplevel->base->client->pid == pid) {
+            struct wl_client *wl_client = wl_resource_get_client(v->xdg_toplevel->base->resource);
+            pid_t v_pid = 0;
+            wl_client_get_credentials(wl_client, &v_pid, NULL, NULL);
+            if (v_pid == pid) {
                 toggle_float(server, v);
                 ipc_send(fd, "OK\n");
                 found = true;
@@ -1618,6 +1653,8 @@ static void ipc_read_client(struct stratwm_server *server, struct stratwm_ipc *i
     }
 }
 
+static int ipc_handle_event(int fd, uint32_t mask, void *data);
+
 static void ipc_accept_client(struct stratwm_server *server) {
     struct stratwm_ipc *ipc = &server->ipc;
     if (ipc->client_count >= IPC_MAX_CLIENTS) return;
@@ -1633,6 +1670,7 @@ static void ipc_accept_client(struct stratwm_server *server) {
 }
 
 static int ipc_handle_event(int fd, uint32_t mask, void *data) {
+    (void)mask;
     struct stratwm_server *server = data;
     struct stratwm_ipc *ipc = &server->ipc;
     if (fd == ipc->socket_fd) {
@@ -1692,6 +1730,9 @@ int main(void) {
         server.workspaces[i].layout = LAYOUT_BSP;  /* Default to BSP layout (Phase 8.6) */
     }
     server.focused_view = NULL;
+
+    /* Guarantee VM boot even if the environment gets scrubbed */
+    setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
 
     server.wl_display = wl_display_create();
     if (server.wl_display == NULL) {
@@ -1779,6 +1820,7 @@ int main(void) {
     fprintf(stderr, "stratwm: started (%s)\n", socket);
 #endif
     spawn_autostart("/bin/foot");
+    spawn_autostart("/bin/stratpanel");
     wl_display_run(server.wl_display);
 
     wl_list_remove(&server.new_xdg_toplevel.link);

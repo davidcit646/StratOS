@@ -52,6 +52,7 @@ struct stratwm_layer_surface {
     struct wlr_scene_layer_surface_v1 *scene_layer_surface;
     struct wl_listener map;
     struct wl_listener unmap;
+    struct wl_listener commit;
     struct wl_listener destroy;
     struct wl_listener new_popup;
 };

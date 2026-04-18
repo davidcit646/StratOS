@@ -91,3 +91,7 @@ coverage/
 # Temporary directories
 tmp/
 temp/
+
+# Rust
+target/
+**/target/

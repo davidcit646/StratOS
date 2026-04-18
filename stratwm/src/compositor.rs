@@ -1,7 +1,9 @@
 use crate::config::Config;
+use crate::cursor::StratCursor;
 use crate::output::StratOutput;
+use crate::seat::{StratSeat, SeatCapabilities};
 use crate::surface::StratSurface;
-use crate::input::StratInput;
+use crate::input::{StratInput, InputEvent};
 use crate::tiling::TilingLayout;
 use crate::ipc::IpcServer;
 use crate::workspace::Workspace;
@@ -19,6 +21,12 @@ pub struct StratCompositor {
     
     // Input handler
     input: StratInput,
+    
+    // Cursor manager
+    cursor: StratCursor,
+    
+    // Wayland seat (pointer + keyboard)
+    seat: StratSeat,
     
     // Global tiling layout
     layout: TilingLayout,
@@ -44,7 +52,15 @@ impl StratCompositor {
         let outputs = Vec::new();
         let surfaces = Vec::new();
         let input = StratInput::new()?;
+        let mut cursor = StratCursor::new()?;
+        let mut seat = StratSeat::new("seat0")?;
         let layout = TilingLayout::new();
+        
+        // Advertise pointer + keyboard capabilities on the seat
+        seat.set_capabilities(SeatCapabilities::POINTER | SeatCapabilities::KEYBOARD);
+        
+        // Set default cursor image
+        cursor.set_default_image();
         
         // Create IPC server
         let ipc = IpcServer::new(Path::new("/run/stratvm.sock"))?;
@@ -61,6 +77,8 @@ impl StratCompositor {
             outputs,
             surfaces,
             input,
+            cursor,
+            seat,
             layout,
             ipc,
             workspaces,
@@ -70,11 +88,53 @@ impl StratCompositor {
     }
     
     pub fn run_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::net::UnixStream;
         use crate::ipc::{read_command, send_response, IpcCommand};
         
         loop {
             // TODO: Run wlroots event loop via FFI
+            
+            // Process input events (pointer motion, key presses)
+            if let Ok(events) = self.input.process_events() {
+                for event in events {
+                    match event {
+                        InputEvent::Pointer(pe) => {
+                            // Move cursor
+                            if pe.button.is_none() {
+                                self.cursor.move_delta(pe.x, pe.y);
+                                let (cx, cy) = self.cursor.position();
+                                self.seat.notify_pointer_motion(0, cx, cy);
+                            }
+                            
+                            // Handle button press/release
+                            if let Some(button) = pe.button {
+                                let state = match pe.button_state {
+                                    Some(crate::input::ButtonState::Pressed) => 1,
+                                    Some(crate::input::ButtonState::Released) => 0,
+                                    None => continue,
+                                };
+                                self.seat.notify_pointer_button(0, button, state);
+                            }
+                        }
+                        InputEvent::Key(ke) => {
+                            let state = match ke.state {
+                                crate::input::KeyState::Pressed => 1,
+                                crate::input::KeyState::Released => 0,
+                            };
+                            self.seat.notify_key(0, ke.keycode, state);
+                            
+                            // Update modifier tracking
+                            if ke.state == crate::input::KeyState::Pressed {
+                                self.input.set_keyboard_state(ke.modifiers);
+                                self.seat.notify_modifiers(
+                                    if ke.modifiers.shift { 1 } else { 0 },
+                                    if ke.modifiers.caps_lock { 1 } else { 0 },
+                                    0, 0,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             
             // Handle IPC connections
             if let Ok(Some(mut stream)) = self.ipc.try_accept() {
@@ -84,7 +144,7 @@ impl StratCompositor {
                 }
             }
             
-            // TODO: Process other events (input, output, surface)
+            // TODO: Process other events (output, surface)
         }
     }
     
@@ -143,6 +203,14 @@ impl StratCompositor {
     
     pub fn input(&mut self) -> &mut StratInput {
         &mut self.input
+    }
+    
+    pub fn cursor(&mut self) -> &mut StratCursor {
+        &mut self.cursor
+    }
+    
+    pub fn seat(&mut self) -> &mut StratSeat {
+        &mut self.seat
     }
     
     pub fn config(&self) -> &Config {

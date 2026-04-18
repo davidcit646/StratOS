@@ -11,6 +11,7 @@ STRATWM_BIN_SOURCE="${STRATWM_BIN_SOURCE:-$REPO_ROOT/stratvm/stratwm}"
 STRATTERM_BIN_SOURCE="${STRATTERM_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/stratterm}"
 STRATTERM_INDEXER_BIN_SOURCE="${STRATTERM_INDEXER_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/stratterm-indexer}"
 STRAT_SETTINGS_BIN_SOURCE="${STRAT_SETTINGS_BIN_SOURCE:-$REPO_ROOT/stratterm/target/release/strat-settings}"
+STRATPANEL_BIN_SOURCE="${STRATPANEL_BIN_SOURCE:-$REPO_ROOT/stratpanel/target/release/stratpanel}"
 STRATTERM_INDEXER_BOOT_SOURCE="$REPO_ROOT/sysroot/strat-indexer-boot.sh"
 STRATSTOP_BIN_SOURCE="${STRATSTOP_BIN_SOURCE:-$REPO_ROOT/stratstop/bin/stratstop}"
 SHELL_BIN_SOURCE="${SHELL_BIN_SOURCE:-/bin/sh}"
@@ -298,6 +299,11 @@ if [ -x "$STRATTERM_BIN_SOURCE" ]; then
     chmod 0755 "$ROOTFS_DIR/bin/stratterm"
 fi
 
+if [ -x "$STRATPANEL_BIN_SOURCE" ]; then
+    cp -aL "$STRATPANEL_BIN_SOURCE" "$ROOTFS_DIR/bin/stratpanel"
+    chmod 0755 "$ROOTFS_DIR/bin/stratpanel"
+fi
+
 if [ -x "$STRATTERM_INDEXER_BIN_SOURCE" ]; then
     cp -aL "$STRATTERM_INDEXER_BIN_SOURCE" "$ROOTFS_DIR/bin/stratterm-indexer"
     chmod 0755 "$ROOTFS_DIR/bin/stratterm-indexer"
@@ -413,6 +419,9 @@ fi
 if [ -x "$ROOTFS_DIR/bin/strat-settings" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/strat-settings" >> "$ROOTFS_DIR/.runtime.queue"
 fi
+if [ -x "$ROOTFS_DIR/bin/stratpanel" ]; then
+    printf '%s\n' "$ROOTFS_DIR/bin/stratpanel" >> "$ROOTFS_DIR/.runtime.queue"
+fi
 if [ -x "$ROOTFS_DIR/bin/sh" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/sh" >> "$ROOTFS_DIR/.runtime.queue"
 fi
@@ -421,6 +430,8 @@ if [ -x "$ROOTFS_DIR/bin/stratwm" ]; then
 fi
 if [ -x "$ROOTFS_DIR/bin/foot" ]; then
     find_and_stage_required_lib "libwayland-cursor.so.0"
+    find_and_stage_required_lib "libutf8proc.so.3"
+    find_and_stage_required_lib "libfcft.so.4"
 fi
 
 line_no=1

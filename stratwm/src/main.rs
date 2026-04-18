@@ -1,5 +1,7 @@
 mod compositor;
+mod cursor;
 mod output;
+mod seat;
 mod surface;
 mod tiling;
 mod input;

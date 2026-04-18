@@ -8,8 +8,9 @@ ACCEL="${ACCEL:-kvm}"
 MEMORY_MB="${MEMORY_MB:-2048}"
 CPUS="${CPUS:-2}"
 DISPLAY_BACKEND="${DISPLAY_BACKEND:-gtk}"
-SYNC_SLOT_A="${SYNC_SLOT_A:-0}"
+SYNC_SLOT_A="${SYNC_SLOT_A:-1}"
 SYNC_ESP="${SYNC_ESP:-1}"
+SERIAL_LOG_PATH="${SERIAL_LOG_PATH:-$REPO_ROOT/out/phase7/logs/qemu-desktop-serial.log}"
 RUN_CONTEXT="local"
 
 has_local() {
@@ -140,6 +141,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+mkdir -p "$(dirname "$SERIAL_LOG_PATH")"
+
+status_file="$(mktemp /tmp/stratos-qemu-status.XXXXXX)"
+
+(
+set +e
 run_cmd "$QEMU_BIN" \
     -machine "q35,accel=$ACCEL" \
     -m "$MEMORY_MB" -smp "$CPUS" \
@@ -154,5 +161,10 @@ run_cmd "$QEMU_BIN" \
     -display "$DISPLAY_BACKEND" \
     -serial stdio \
     -no-reboot
+printf '%s\n' "$?" > "$status_file"
+) 2>&1 | tee "$SERIAL_LOG_PATH"
 
-exit $?
+status="$(cat "$status_file" 2>/dev/null || printf '1')"
+rm -f "$status_file"
+echo "QEMU serial log captured at: $SERIAL_LOG_PATH" >&2
+exit "$status"

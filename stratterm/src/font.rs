@@ -390,6 +390,7 @@ pub const FONT_DATA: [[u16; 16]; 128] = [
 pub const FONT_WIDTH: usize = 8;
 pub const FONT_HEIGHT: usize = 16;
 
+#[allow(dead_code)]
 pub fn get_glyph(ch: char) -> Option<&'static [u16; 16]> {
     let idx = ch as usize;
     if idx < 128 {

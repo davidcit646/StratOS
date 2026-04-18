@@ -2,6 +2,7 @@
 pub enum Color {
     Default,
     Indexed(u8),
+    #[allow(dead_code)]
     RGB(u8, u8, u8),
 }
 

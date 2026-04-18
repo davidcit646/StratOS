@@ -10,6 +10,7 @@ INIT_MODE="${INIT_MODE:-auto}"
 RUN_SMOKE=0
 SMOKE_SECONDS="${SMOKE_SECONDS:-20}"
 BUILD_STRATTERM_INDEXER="${BUILD_STRATTERM_INDEXER:-1}"
+BUILD_STRATPANEL="${BUILD_STRATPANEL:-1}"
 
 usage() {
     cat <<USAGE
@@ -78,6 +79,10 @@ fi
 
 if [ "$BUILD_STRATTERM_INDEXER" = "1" ]; then
     cargo build --release --manifest-path "$REPO_ROOT/stratterm/Cargo.toml"
+fi
+
+if [ "$BUILD_STRATPANEL" = "1" ]; then
+    cargo build --release --manifest-path "$REPO_ROOT/stratpanel/Cargo.toml"
 fi
 
 "$REPO_ROOT/scripts/phase7/prepare-minimal-rootfs.sh" \

@@ -222,6 +222,7 @@ impl WaylandWindow {
         (self.width, self.height)
     }
 
+    #[allow(dead_code)]
     pub fn is_configured(&self) -> bool {
         self.configured
     }

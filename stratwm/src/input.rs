@@ -1,6 +1,6 @@
 use std::os::unix::io::RawFd;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KeyState {
     Pressed,
     Released,

@@ -38,7 +38,7 @@ impl PanelConfig {
         PanelConfig {
             panel: PanelSection {
                 position: "top".to_string(),
-                autohide: true,
+                autohide: false,
                 summon_key: "super+grave".to_string(),
                 size: 28,
                 opacity: 0.85,
