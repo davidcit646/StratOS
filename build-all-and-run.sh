@@ -1,10 +1,10 @@
 #!/bin/bash
 # Full StratOS build script - builds everything inline and runs QEMU
-# Usage: ./scripts/build-all-and-run.sh [--clean] [--skip-kernel] [--recreate-disk]
+# Usage: ./build-all-and-run.sh [--clean] [--skip-kernel] [--recreate-disk]
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$REPO_ROOT/out/phase7"
 PHASE4_DIR="$REPO_ROOT/out/phase4"
 PHASE3_DIR="$REPO_ROOT/out/phase3"
@@ -61,7 +61,18 @@ require_cmd() {
     fi
 }
 
-mkdir -p "$IDE_LOG_DIR"
+if [ ! -d "$IDE_LOG_DIR" ]; then
+    mkdir -p "$IDE_LOG_DIR"
+fi
+if [ ! -d "$OUT_DIR" ]; then
+    mkdir -p "$OUT_DIR"
+fi
+if [ ! -d "$PHASE4_DIR" ]; then
+    mkdir -p "$PHASE4_DIR"
+fi
+if [ ! -d "$PHASE3_DIR" ]; then
+    mkdir -p "$PHASE3_DIR"
+fi
 
 # Kill existing QEMU
 if pgrep -f "qemu-system-x86_64.*$REPO_ROOT/out/phase4/test-disk.img" > /dev/null 2>&1; then
