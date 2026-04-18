@@ -1,8 +1,9 @@
 extern crate libc;
 
-mod service;
+mod cmdline;
 mod maint;
 mod network;
+mod service;
 
 fn main() -> ! {
     // Check for network manager mode (called as child process)
@@ -53,6 +54,14 @@ unsafe fn set_environment_variables() {
 }
 
 unsafe fn mount_filesystems() {
+    let cl = cmdline::read_proc_cmdline();
+    let cfg = cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "config", 5))
+        .expect("stratman: config device path");
+    let apps = cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "apps", 6))
+        .expect("stratman: apps device path");
+    let home = cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "home", 7))
+        .expect("stratman: home device path");
+
     ensure_dir(b"/proc\0");
     ensure_dir(b"/sys\0");
     ensure_dir(b"/dev\0");
@@ -70,9 +79,9 @@ unsafe fn mount_filesystems() {
     mount_best_effort(b"proc\0", b"/proc\0", b"proc\0", 0, core::ptr::null());
     mount_best_effort(b"sys\0", b"/sys\0", b"sysfs\0", 0, core::ptr::null());
     mount_best_effort(b"dev\0", b"/dev\0", b"devtmpfs\0", 0, core::ptr::null());
-    mount_best_effort(b"/dev/sda5\0", b"/config\0", b"ext4\0", 0, core::ptr::null());
-    mount_best_effort(b"/dev/sda6\0", b"/apps\0", b"ext4\0", 0, core::ptr::null());
-    mount_best_effort(b"/dev/sda7\0", b"/home\0", b"btrfs\0", 0, core::ptr::null());
+    mount_best_effort_source(cfg.as_ptr(), b"/config\0", b"ext4\0", 0, core::ptr::null());
+    mount_best_effort_source(apps.as_ptr(), b"/apps\0", b"ext4\0", 0, core::ptr::null());
+    mount_best_effort_source(home.as_ptr(), b"/home\0", b"btrfs\0", 0, core::ptr::null());
     mount_best_effort(b"/config/var\0", b"/var\0", b"", libc::MS_BIND, core::ptr::null());
     mount_best_effort(b"/config/etc\0", b"/etc\0", b"", libc::MS_BIND, core::ptr::null());
     ensure_dir(b"/var/cache\0");
@@ -88,6 +97,39 @@ unsafe fn mount_filesystems() {
 unsafe fn ensure_dir(path: &[u8]) {
     let path_ptr = path.as_ptr() as *const i8;
     libc::mkdir(path_ptr, 0o755);
+}
+
+unsafe fn mount_best_effort_source(
+    source: *const i8,
+    target: &[u8],
+    fstype: &[u8],
+    flags: libc::c_ulong,
+    data: *const i8,
+) {
+    let target_ptr = target.as_ptr() as *const i8;
+    let fstype_ptr = if fstype.is_empty() {
+        core::ptr::null()
+    } else {
+        fstype.as_ptr() as *const i8
+    };
+
+    let result = libc::mount(
+        source,
+        target_ptr,
+        fstype_ptr,
+        flags,
+        data as *const libc::c_void,
+    );
+    if result < 0 {
+        let errno = *libc::__errno_location();
+        if errno != libc::EBUSY && errno != libc::EEXIST {
+            let msg = b"stratman: mount failed\0";
+            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const libc::c_void, msg.len());
+            libc::write(libc::STDERR_FILENO, target_ptr as *const libc::c_void, target.len());
+            let newline = b"\n\0";
+            libc::write(libc::STDERR_FILENO, newline.as_ptr() as *const libc::c_void, newline.len());
+        }
+    }
 }
 
 unsafe fn mount_best_effort(

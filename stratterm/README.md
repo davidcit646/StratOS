@@ -1,5 +1,7 @@
 # stratterm
 
+**Docs:** [../docs/human/stratterm.md](../docs/human/stratterm.md) (how this crate fits the OS) · [../docs/human/spotlite.md](../docs/human/spotlite.md) (indexer / search) · [../docs/agent/stratterm.md](../docs/agent/stratterm.md) (agent brief).
+
 Current StratOS terminal stack status.
 
 ## Implemented now

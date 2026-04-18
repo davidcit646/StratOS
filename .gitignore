@@ -68,6 +68,9 @@ stratterm/Cargo.lock
 *.swp
 *~
 
+# IDE-local run logs (QEMU serial, desktop test captures, etc.)
+ide-logs/
+
 # Log files
 *.log
 logs/

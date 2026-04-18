@@ -1,5 +1,8 @@
 #!/bin/bash
-# Updates the test disk with new kernel, initramfs, and system image
+# Populates the StratOS GPT test disk: ESP slot payloads (matches stratboot paths),
+# raw EROFS on SLOT_A, formatted CONFIG / STRAT_CACHE / HOME.
+#
+# Partition layout must match scripts/create-test-disk.sh and stratboot partition.c.
 
 set -euo pipefail
 
@@ -35,36 +38,84 @@ done
 echo "Updating disk: $DISK_IMAGE"
 echo "  Slot A EROFS: $SLOT_A_EROFS"
 echo "  Boot EFI: $BOOT_EFI"
-echo "  Kernel: $KERNEL"
+echo "  Kernel (bzImage / EFI stub -> vmlinuz.efi): $KERNEL"
 echo "  Initrd: $INITRD"
 
-# Setup loop device
-LOOP_DEV=$(losetup -f --show "$DISK_IMAGE")
-trap "losetup -d $LOOP_DEV" EXIT
+LOOP_DEV=""
+ESP_MOUNT=""
 
-# Reread partition table
-partprobe "$LOOP_DEV"
+cleanup() {
+    if [ -n "${ESP_MOUNT}" ]; then
+        umount "${ESP_MOUNT}" 2>/dev/null || true
+        rmdir "${ESP_MOUNT}" 2>/dev/null || true
+    fi
+    if [ -n "${LOOP_DEV}" ]; then
+        kpartx -d "${LOOP_DEV}" 2>/dev/null || true
+        losetup -d "${LOOP_DEV}" 2>/dev/null || true
+    fi
+}
 
-# Mount ESP partition
+if ! LOOP_DEV=$(losetup -f --show "$DISK_IMAGE" 2>/dev/null); then
+    echo "Warning: Failed to set up loop device (container/WSL limitation?)" >&2
+    echo "Skipping disk update. Components are built in out/ directories." >&2
+    echo "You can manually update the disk or run this in a native Linux environment." >&2
+    exit 0
+fi
+trap cleanup EXIT
+
+kpartx -a "$LOOP_DEV"
+sleep 1
+
+BASE="/dev/mapper/$(basename "$LOOP_DEV")"
+PART1="${BASE}p1"
+PART2="${BASE}p2"
+PART5="${BASE}p5"
+PART6="${BASE}p6"
+PART7="${BASE}p7"
+
+if ! blkid "$PART1" >/dev/null 2>&1; then
+    echo "Formatting ESP partition as FAT32..."
+    mkfs.vfat -F 32 "$PART1"
+fi
+
+EROF_SIZE=$(stat -c%s "$SLOT_A_EROFS")
+PART2_SIZE=$(blockdev --getsize64 "$PART2")
+if [ "$EROF_SIZE" -gt "$PART2_SIZE" ]; then
+    echo "error: EROFS image (${EROF_SIZE} bytes) is larger than SLOT_A partition (${PART2_SIZE} bytes)." >&2
+    echo "  Enlarge SLOT_A in scripts/create-test-disk.sh or shrink the rootfs / EROFS image." >&2
+    exit 1
+fi
+
+echo "Writing EROFS system image to SLOT_A (partition 2)..."
+dd if="$SLOT_A_EROFS" of="$PART2" bs=4M conv=fsync status=progress
+
+for p in "$PART5" "$PART6"; do
+    if ! blkid "$p" >/dev/null 2>&1; then
+        echo "Formatting $p as ext4..."
+        mkfs.ext4 -F "$p"
+    fi
+done
+
+if ! blkid "$PART7" >/dev/null 2>&1; then
+    echo "Formatting HOME partition as btrfs..."
+    mkfs.btrfs -f "$PART7"
+fi
+
 ESP_MOUNT=$(mktemp -d)
-mount "${LOOP_DEV}p1" "$ESP_MOUNT"
+mount "$PART1" "$ESP_MOUNT"
 
-# Update EFI boot loader
-mkdir -p "$ESP_MOUNT/EFI/BOOT"
+mkdir -p "$ESP_MOUNT/EFI/BOOT" \
+    "$ESP_MOUNT/EFI/STRAT/SLOT_A" \
+    "$ESP_MOUNT/EFI/STRAT/SLOT_B" \
+    "$ESP_MOUNT/EFI/STRAT/SLOT_C"
+
 cp "$BOOT_EFI" "$ESP_MOUNT/EFI/BOOT/BOOTX64.EFI"
+cp "$KERNEL" "$ESP_MOUNT/EFI/STRAT/SLOT_A/vmlinuz.efi"
+cp "$INITRD" "$ESP_MOUNT/EFI/STRAT/SLOT_A/initramfs.img"
 
-# Update kernel and initramfs
-cp "$KERNEL" "$ESP_MOUNT/vmlinuz"
-cp "$INITRD" "$ESP_MOUNT/initramfs.cpio.gz"
-
-# Update system partition
-SYSTEM_MOUNT=$(mktemp -d)
-mount "${LOOP_DEV}p2" "$SYSTEM_MOUNT"
-cp "$SLOT_A_EROFS" "$SYSTEM_MOUNT/slot-system.erofs"
-
-# Cleanup
-umount "$SYSTEM_MOUNT"
+sync
 umount "$ESP_MOUNT"
-rmdir "$SYSTEM_MOUNT" "$ESP_MOUNT"
+rmdir "$ESP_MOUNT"
+ESP_MOUNT=""
 
 echo "Disk updated successfully"

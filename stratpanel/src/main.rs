@@ -1,4 +1,6 @@
-use std::time::{Instant, Duration};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use stratlayer::{
     Event, Interface,
@@ -162,6 +164,49 @@ fn fill_rect(buf: &mut [u8], stride: u32, panel_width: i32, panel_height: i32,
     }
 }
 
+const PEEK_H: u32 = 4;
+const BTN_LEFT: u32 = 0x110;
+/// `wl_pointer.axis` value 0 — vertical scroll.
+const AXIS_SCROLL_VERTICAL: u32 = 0;
+
+fn launcher_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| {
+            let t = s.trim();
+            if t.len() <= 3 {
+                t.to_uppercase()
+            } else {
+                t[..3].to_uppercase()
+            }
+        })
+        .unwrap_or_else(|| "?".to_string())
+}
+
+fn launch_detached(path: &str) {
+    if !path.starts_with('/') || path.contains('\0') {
+        eprintln!("stratpanel: invalid launcher path (must be absolute)");
+        return;
+    }
+    if !Path::new(path).exists() {
+        eprintln!("stratpanel: launcher not found: {}", path);
+        return;
+    }
+    let wayland = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run".into());
+    if let Err(e) = Command::new(path)
+        .env("WAYLAND_DISPLAY", wayland)
+        .env("XDG_RUNTIME_DIR", runtime)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        eprintln!("stratpanel: spawn {} failed: {}", path, e);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 1: Connect to Wayland
     let mut client = WaylandClient::new()?;
@@ -271,17 +316,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Step 7: Allocate SHM buffer
+    // Step 7: Allocate SHM buffer (full design height; compositor clips when autohide uses PEEK_H)
     let panel_width = if confirmed_width == 0 { 1920 } else { confirmed_width };
-    let panel_height = if confirmed_height == 0 { config.panel.size as i32 } else { confirmed_height as i32 };
+    let buffer_draw_h = config.panel.size as i32;
     let stride = panel_width * 4;
-    let size = (stride * panel_height as u32) as usize;
+    let size = (stride * buffer_draw_h as u32) as usize;
 
     let pool = ShmPool::create(size)?;
     let shm_fd = pool.fd();
 
     // Fill with configurable-opacity panel background (ARGB8888)
-    let mut shm_buffer = ShmBuffer::new(pool, 0, panel_width, panel_height as u32, stride);
+    let mut shm_buffer = ShmBuffer::new(pool, 0, panel_width, buffer_draw_h as u32, stride);
     {
         let data = shm_buffer.data_mut();
         let color = ((config.panel.opacity * 255.0) as u32) << 24 | 0x2B2B2B;
@@ -306,7 +351,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         buffer_id,
         0,
         panel_width as i32,
-        panel_height as i32,
+        buffer_draw_h,
         stride as i32,
         0, // WL_SHM_FORMAT_ARGB8888 = 0
         client.socket(),
@@ -314,8 +359,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 8: Attach buffer and commit
     WlSurface::new(surface_id).attach(buffer_id, 0, 0, client.socket());
-    WlSurface::new(surface_id).damage(0, 0, panel_width as i32, config.panel.size as i32, client.socket());
+    WlSurface::new(surface_id).damage(0, 0, panel_width as i32, buffer_draw_h, client.socket());
     WlSurface::new(surface_id).commit(client.socket());
+
+    let mut layer_surface_height = if confirmed_height == 0 {
+        buffer_draw_h
+    } else {
+        confirmed_height as i32
+    };
+
+    if config.panel.autohide {
+        ls.set_size(0, PEEK_H, client.socket());
+        ls.set_exclusive_zone(0, client.socket());
+        WlSurface::new(surface_id).commit(client.socket());
+        'peek: loop {
+            for event in client.poll()? {
+                if let Event::LayerSurfaceConfigure { serial, height, .. } = event {
+                    ls.ack_configure(serial, client.socket());
+                    if height > 0 {
+                        layer_surface_height = height as i32;
+                    }
+                    break 'peek;
+                }
+            }
+        }
+    }
 
     // Initialize clock
     let mut clock = clock::Clock::new();
@@ -335,7 +403,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cursor blink state
     let mut cursor_visible = true;
     let mut last_cursor_blink = Instant::now();
-    
+
+    // Pinned strip horizontal scroll (pixels)
+    let mut pinned_scroll: i32 = 0;
+
+    // Autohide: collapse after pointer leaves (debounced)
+    let mut autohide_collapse_at: Option<Instant> = None;
+
     // Track last rendered state to avoid unnecessary commits
     let mut last_clock_text = String::new();
     let mut needs_commit = true; // Initial render
@@ -364,9 +438,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        if let Some(t) = autohide_collapse_at {
+            if Instant::now() >= t {
+                autohide_collapse_at = None;
+                if config.panel.autohide && layer_surface_height > PEEK_H as i32 {
+                    ls.set_size(0, PEEK_H, client.socket());
+                    ls.set_exclusive_zone(0, client.socket());
+                    WlSurface::new(surface_id).commit(client.socket());
+                    layer_surface_height = PEEK_H as i32;
+                    needs_commit = true;
+                }
+            }
+        }
+
         // Only render and commit if something changed
         if needs_commit {
-            // Clear full panel background first
+            let ph = buffer_draw_h;
+            let vis_h = layer_surface_height.min(ph);
+            // Clear full drawable buffer
             {
                 let data = shm_buffer.data_mut();
                 let color = ((config.panel.opacity * 255.0) as u32) << 24 | 0x2B2B2B;
@@ -379,112 +468,291 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Render text input field on the left side
-            let input_x = 8;
-            let input_y = 2;
-            let input_w = 200;
-            let input_h = panel_height - 4;
-            {
+            if vis_h <= PEEK_H as i32 {
                 let data = shm_buffer.data_mut();
-                // Input field background
-                let input_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B;
-                fill_rect(data, stride, panel_width as i32, panel_height, input_x, input_y, input_w, input_h, input_bg);
+                let accent = ((config.panel.opacity * 255.0) as u32) << 24 | 0x5B9BD5;
+                fill_rect(data, stride, panel_width as i32, ph, 0, 0, panel_width as i32, vis_h, accent);
+            } else {
+                let input_x = 8i32;
+                let input_y = 2i32;
+                let input_w = 200i32;
+                let input_h = vis_h - 4;
 
-                // Render input text
-                let display_text = text_input.display_text();
-                let text_y = input_y + (input_h - 7) / 2;
-                draw_text(data, stride, panel_width as i32, panel_height, input_x + 4, text_y, &display_text, 0xFFFFFFFF);
+                {
+                    let data = shm_buffer.data_mut();
+                    let input_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B;
+                    fill_rect(data, stride, panel_width as i32, ph, input_x, input_y, input_w, input_h, input_bg);
 
-                // Render blinking cursor
-                if keyboard_focused && cursor_visible {
-                    let cursor_x = input_x + 4 + text_input.cursor_pixel_offset();
-                    fill_rect(data, stride, panel_width as i32, panel_height, cursor_x, text_y, 1, 9, 0xFFFFFFFF);
+                    let display_text = text_input.display_text();
+                    let text_y = input_y + (input_h - 7) / 2;
+                    draw_text(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        input_x + 4,
+                        text_y,
+                        &display_text,
+                        0xFFFFFFFF,
+                    );
+
+                    if keyboard_focused && cursor_visible {
+                        let cursor_x = input_x + 4 + text_input.cursor_pixel_offset();
+                        fill_rect(data, stride, panel_width as i32, ph, cursor_x, text_y, 1, 9, 0xFFFFFFFF);
+                    }
+                }
+
+                let clock_tw = last_clock_text.len() as i32 * 6;
+                let clock_x = panel_width as i32 - clock_tw - 8;
+                let tray_slot = 22i32;
+                let tray_w = tray_slot * 4 + 4;
+                let tray_x = clock_x - 8 - tray_w;
+
+                let pinned_x = input_x + input_w + 8;
+                let pin_cell = 32i32;
+                let pin_gap = 4i32;
+                let pins_content = if config.pinned.apps.is_empty() {
+                    0i32
+                } else {
+                    config.pinned.apps.len() as i32 * (pin_cell + pin_gap) - pin_gap
+                };
+                let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
+                let max_scroll = (pins_content - pinned_max_w).max(0);
+                pinned_scroll = pinned_scroll.clamp(0, max_scroll);
+
+                if pinned_max_w > 0 && !config.pinned.apps.is_empty() {
+                    let data = shm_buffer.data_mut();
+                    let clip_r = pinned_x + pinned_max_w;
+                    for (i, app) in config.pinned.apps.iter().enumerate() {
+                        let bx = pinned_x + i as i32 * (pin_cell + pin_gap) - pinned_scroll;
+                        if bx + pin_cell < pinned_x || bx >= clip_r {
+                            continue;
+                        }
+                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x252525;
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            bx,
+                            2,
+                            pin_cell,
+                            vis_h - 4,
+                            cell_bg,
+                        );
+                        let label = launcher_label(app);
+                        let tx = bx + (pin_cell - label.len() as i32 * 6) / 2;
+                        draw_text(data, stride, panel_width as i32, ph, tx, (vis_h - 7) / 2, &label, 0xFFE0E0E0);
+                    }
+                }
+
+                let button_width = 40i32;
+                let button_height = vis_h - 4;
+                let total_width = workspaces.len() as i32 * (button_width + 4);
+                let start_x = (panel_width as i32 - total_width) / 2;
+                {
+                    let data = shm_buffer.data_mut();
+                    for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
+                        let bx = start_x + (i as i32 * (button_width + 4));
+                        let by = 2;
+                        let button_color = if *focused {
+                            ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
+                        } else {
+                            ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
+                        };
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            bx,
+                            by,
+                            button_width,
+                            button_height,
+                            button_color,
+                        );
+                        let text_x = bx + (button_width - name.len() as i32 * 6) / 2;
+                        let text_y = by + (button_height - 7) / 2;
+                        draw_text(data, stride, panel_width as i32, ph, text_x, text_y, name, 0xFFFFFFFF);
+                    }
+                }
+
+                let stub = 0xFF666666u32;
+                let labels = [
+                    ("N", config.tray.show_network),
+                    ("V", config.tray.show_volume),
+                    ("U", config.tray.show_updates),
+                    ("B", config.tray.show_battery),
+                ];
+                {
+                    let data = shm_buffer.data_mut();
+                    for i in 0..4 {
+                        let (ch, enabled) = labels[i];
+                        let bx = tray_x + i as i32 * tray_slot;
+                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x151515;
+                        fill_rect(data, stride, panel_width as i32, ph, bx, 2, tray_slot - 2, vis_h - 4, cell_bg);
+                        let col = if enabled { stub } else { 0xFF444444 };
+                        let tag = if enabled {
+                            format!("{}~", ch)
+                        } else {
+                            format!("{}-", ch)
+                        };
+                        draw_text(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            bx + 4,
+                            (vis_h - 7) / 2,
+                            &tag,
+                            col,
+                        );
+                    }
+                }
+
+                let clock_y = (vis_h - 7) / 2;
+                {
+                    let data = shm_buffer.data_mut();
+                    draw_text(data, stride, panel_width as i32, ph, clock_x, clock_y, &last_clock_text, 0xFFFFFFFF);
                 }
             }
 
-            let text_width = last_clock_text.len() as i32 * 6;
-            let x = panel_width as i32 - text_width - 8;
-            let y = ((panel_height - 7) / 2) as i32;
-            {
-                let data = shm_buffer.data_mut();
-                draw_text(data, stride, panel_width as i32, panel_height, x, y, &last_clock_text, 0xFFFFFFFF);
-            }
-
-            // Render workspace buttons in center
-            let button_width = 40;
-            let button_height = panel_height - 4;
-            let total_width = workspaces.len() as i32 * (button_width + 4);
-            let start_x = (panel_width as i32 - total_width) / 2;
-
-            {
-                let data = shm_buffer.data_mut();
-                for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
-                    let bx = start_x + (i as i32 * (button_width + 4));
-                    let by = 2;
-
-                    let button_color = if *focused {
-                        ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
-                    } else {
-                        ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
-                    };
-
-                    fill_rect(data, stride, panel_width as i32, panel_height, bx, by, button_width, button_height, button_color);
-
-                    let text_x = bx + (button_width - name.len() as i32 * 6) / 2;
-                    let text_y = by + (button_height - 7) / 2;
-                    draw_text(data, stride, panel_width as i32, panel_height, text_x, text_y, name, 0xFFFFFFFF);
-                }
-            }
-
-            WlSurface::new(surface_id).damage(0, 0, panel_width as i32, panel_height, client.socket());
+            WlSurface::new(surface_id).damage(0, 0, panel_width as i32, vis_h.max(1), client.socket());
             WlSurface::new(surface_id).commit(client.socket());
             needs_commit = false;
         }
 
         for event in client.poll()? {
             match event {
-                Event::LayerSurfaceConfigure { serial, .. } => {
+                Event::LayerSurfaceConfigure { serial, height, .. } => {
                     if serial != last_configure_serial {
                         last_configure_serial = serial;
                         ls.ack_configure(serial, client.socket());
+                        if height > 0 {
+                            layer_surface_height = height as i32;
+                        }
+                        needs_commit = true;
                     }
                 }
                 Event::LayerSurfaceClosed { .. } => return Ok(()),
                 Event::PointerMotion { surface_x, surface_y } => {
                     pointer_x = surface_x;
                     pointer_y = surface_y;
+                    if config.panel.autohide
+                        && layer_surface_height <= PEEK_H as i32
+                        && pointer_y < (PEEK_H as f64) + 2.0
+                    {
+                        ls.set_size(0, config.panel.size, client.socket());
+                        ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+                        WlSurface::new(surface_id).commit(client.socket());
+                        layer_surface_height = buffer_draw_h;
+                        autohide_collapse_at = None;
+                        needs_commit = true;
+                    }
                 }
                 Event::PointerEnter { surface_x, surface_y } => {
                     pointer_x = surface_x;
                     pointer_y = surface_y;
+                    autohide_collapse_at = None;
+                    if config.panel.autohide && layer_surface_height <= PEEK_H as i32 {
+                        ls.set_size(0, config.panel.size, client.socket());
+                        ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+                        WlSurface::new(surface_id).commit(client.socket());
+                        layer_surface_height = buffer_draw_h;
+                        needs_commit = true;
+                    }
+                }
+                Event::PointerLeave => {
+                    if config.panel.autohide && layer_surface_height > PEEK_H as i32 {
+                        autohide_collapse_at = Some(Instant::now() + Duration::from_millis(450));
+                    }
+                }
+                Event::PointerAxis { axis, value } => {
+                    if axis != AXIS_SCROLL_VERTICAL {
+                        continue;
+                    }
+                    let px = pointer_x as i32;
+                    let py = pointer_y as i32;
+                    let vis_h = layer_surface_height.min(buffer_draw_h);
+                    if vis_h <= PEEK_H as i32 {
+                        continue;
+                    }
+                    let input_end = 8 + 200 + 8;
+                    let clock_tw = last_clock_text.len() as i32 * 6;
+                    let clock_x = panel_width as i32 - clock_tw - 8;
+                    let tray_w = 22 * 4 + 4;
+                    let tray_x = clock_x - 8 - tray_w;
+                    let pinned_x = input_end;
+                    let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
+                    if px >= pinned_x && px < pinned_x + pinned_max_w && py >= 2 && py < vis_h - 2 {
+                        pinned_scroll -= (value * 24.0) as i32;
+                        needs_commit = true;
+                    }
                 }
                 Event::PointerButton { button, state } => {
-                    if button == 0x110 && state == 1 {
+                    if button == BTN_LEFT && state == 1 {
                         let px = pointer_x as i32;
                         let py = pointer_y as i32;
+                        let vis_h = layer_surface_height.min(buffer_draw_h);
 
-                        // Check if click is in text input field
-                        if px >= 8 && px < 208 && py >= 2 && py < panel_height - 2 {
+                        if vis_h <= PEEK_H as i32 {
+                            ls.set_size(0, config.panel.size, client.socket());
+                            ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+                            WlSurface::new(surface_id).commit(client.socket());
+                            layer_surface_height = buffer_draw_h;
+                            needs_commit = true;
+                            continue;
+                        }
+
+                        if px >= 8 && px < 208 && py >= 2 && py < vis_h - 2 {
                             if !keyboard_focused {
                                 keyboard_focused = true;
                                 ls.set_keyboard_interactivity(1, client.socket());
                                 WlSurface::new(surface_id).commit(client.socket());
                             }
-                            // Position cursor within text
                             text_input.click_at(px - 12);
                         } else {
-                            // Click outside input field — check workspace buttons
+                            let input_end = 8 + 200 + 8;
+                            let clock_tw = last_clock_text.len() as i32 * 6;
+                            let clock_x = panel_width as i32 - clock_tw - 8;
+                            let tray_slot = 22i32;
+                            let tray_w = tray_slot * 4 + 4;
+                            let tray_x = clock_x - 8 - tray_w;
+                            let pinned_x = input_end;
+                            let pin_cell = 32i32;
+                            let pin_gap = 4i32;
+                            let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
+                            let pins_content = if config.pinned.apps.is_empty() {
+                                0i32
+                            } else {
+                                config.pinned.apps.len() as i32 * (pin_cell + pin_gap) - pin_gap
+                            };
+                            let max_scroll = (pins_content - pinned_max_w).max(0);
+                            let scroll = pinned_scroll.clamp(0, max_scroll);
+
+                            if pinned_max_w > 0 && py >= 2 && py < vis_h - 2 {
+                                for (i, app) in config.pinned.apps.iter().enumerate() {
+                                    let bx = pinned_x + i as i32 * (pin_cell + pin_gap) - scroll;
+                                    if bx + pin_cell < pinned_x || bx >= pinned_x + pinned_max_w {
+                                        continue;
+                                    }
+                                    if px >= bx && px < bx + pin_cell {
+                                        launch_detached(app);
+                                        break;
+                                    }
+                                }
+                            }
+
                             let btn_w = 40i32;
                             let total_w = workspaces.len() as i32 * (btn_w + 4);
                             let start_x = (panel_width as i32 - total_w) / 2;
                             for (i, (id, _, _)) in workspaces.iter().enumerate() {
                                 let bx = start_x + i as i32 * (btn_w + 4);
-                                if px >= bx && px < bx + btn_w && py >= 2 && py < panel_height - 2 {
+                                if px >= bx && px < bx + btn_w && py >= 2 && py < vis_h - 2 {
                                     ipc.switch_workspace(*id);
                                     break;
                                 }
                             }
-                            // Release keyboard focus
                             if keyboard_focused {
                                 keyboard_focused = false;
                                 ls.set_keyboard_interactivity(0, client.socket());

@@ -658,6 +658,8 @@ static const CHAR16 *slot_name(StratSlotId slot) {
 }
 
 static CHAR16 slot_root_partuuid[3][37];
+/* GPT partition names CONFIG / STRAT_CACHE / HOME — passed through the kernel cmdline for initramfs. */
+static CHAR16 misc_partuuid[3][37];
 
 static BOOLEAN gpt_header_valid(const UINT8 *hdr, UINTN size) {
     if (hdr == NULL || size < 8) {
@@ -1103,10 +1105,16 @@ static const CHAR16 *slot_initrd_path(StratSlotId slot) {
     }
 }
 
-static EFI_STATUS start_kernel_efi(EFI_HANDLE image, EFI_SYSTEM_TABLE *st,
-                                    const CHAR16 *kernel_path,
-                                    const CHAR16 *root_device,
-                                    const CHAR16 *initrd_path) {
+static EFI_STATUS start_kernel_efi(
+    EFI_HANDLE image,
+    EFI_SYSTEM_TABLE *st,
+    const CHAR16 *kernel_path,
+    const CHAR16 *root_device,
+    const CHAR16 *config_partuuid,
+    const CHAR16 *apps_partuuid,
+    const CHAR16 *home_partuuid,
+    const CHAR16 *initrd_path
+) {
     EFI_STATUS status;
     EFI_LOADED_IMAGE *loaded = NULL;
 
@@ -1142,13 +1150,20 @@ static EFI_STATUS start_kernel_efi(EFI_HANDLE image, EFI_SYSTEM_TABLE *st,
     }
 
     // Build cmdline with explicit console targets for VM visibility.
-    // Use a fixed-size CHAR16 buffer (512 chars is enough)
-    // Official StratOS kernel command line contract
-    CHAR16 cmdline[512];
-    // Use SPrint from gnu-efi (efilib.h) to build the string:
-    SPrint(cmdline, sizeof(cmdline),
-           L"root=PARTUUID=%s rootfstype=erofs ro initrd=%s loglevel=4 console=tty0 console=ttyS0,115200",
-           root_device, initrd_path);
+    // Include CONFIG / STRAT_CACHE (apps) / HOME PARTUUIDs so virtio (/dev/vda*) boots do not depend on guessed device names.
+    CHAR16 cmdline[1024];
+    SPrint(
+        cmdline,
+        sizeof(cmdline),
+        L"root=PARTUUID=%s rootfstype=erofs ro "
+        L"config=PARTUUID=%s apps=PARTUUID=%s home=PARTUUID=%s "
+        L"initrd=%s loglevel=4 console=tty0 console=ttyS0,115200",
+        root_device,
+        config_partuuid,
+        apps_partuuid,
+        home_partuuid,
+        initrd_path
+    );
 
     EFI_LOADED_IMAGE *kernel_image = NULL;
     EFI_STATUS li_status = uefi_call_wrapper(
@@ -1187,7 +1202,12 @@ static EFI_STATUS strat_maybe_init_vars(EFI_RUNTIME_SERVICES *rt) {
     if (s != EFI_SUCCESS) return s;
     s = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_ACTIVE_SLOT,    0, STRAT_EFI_VAR_ATTRS); // SLOT_A
     if (s != EFI_SUCCESS) return s;
-    s = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_PINNED_SLOT,    0, STRAT_EFI_VAR_ATTRS); // NONE
+    s = strat_efi_set_u8(
+        rt,
+        STRAT_EFI_VAR_NAME_PINNED_SLOT,
+        (UINT8)STRAT_SLOT_NONE,
+        STRAT_EFI_VAR_ATTRS
+    ); /* 0xFF — do not pin; 0 would mean SLOT_A */
     if (s != EFI_SUCCESS) return s;
     s = strat_efi_set_u8(rt, STRAT_EFI_VAR_NAME_RESET_FLAGS,    0, STRAT_EFI_VAR_ATTRS);
     if (s != EFI_SUCCESS) return s;
@@ -1243,7 +1263,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
 #endif
 
     for (INT32 i = 0; i < 3; i++) {
-        slot_root_partuuid[i][0] = '\0';
+        slot_root_partuuid[i][0] = L'\0';
+        misc_partuuid[i][0] = L'\0';
     }
 
     for (StratSlotId slot = STRAT_SLOT_A; slot <= STRAT_SLOT_C; slot = (StratSlotId)(slot + 1)) {
@@ -1257,10 +1278,23 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
 #ifdef DEBUG
                 debugcon_log("StratBoot: failed to read PARTUUID\n");
 #endif
-                slot_root_partuuid[idx][0] = '\0';
+                slot_root_partuuid[idx][0] = L'\0';
                 Print(L"StratBoot: PARTUUID read failed for %s: status=0x%lx\n", name, (UINTN)uuid_status);
             } else {
                 Print(L"StratBoot: %s PARTUUID=%s\n", name, slot_root_partuuid[idx]);
+            }
+        }
+    }
+
+    {
+        const CHAR16 *misc_names[3] = { L"CONFIG", L"STRAT_CACHE", L"HOME" };
+        for (UINTN i = 0; i < 3; i++) {
+            EFI_STATUS mu = gpt_find_partuuid_on_any_disk(system_table, misc_names[i], misc_partuuid[i], 37);
+            if (mu != EFI_SUCCESS) {
+                misc_partuuid[i][0] = L'\0';
+                Print(L"StratBoot: PARTUUID read failed for %s: status=0x%lx\n", misc_names[i], (UINTN)mu);
+            } else {
+                Print(L"StratBoot: %s PARTUUID=%s\n", misc_names[i], misc_partuuid[i]);
             }
         }
     }
@@ -1388,13 +1422,28 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         return EFI_ABORTED;
     }
 
+    if (misc_partuuid[0][0] == L'\0' || misc_partuuid[1][0] == L'\0' || misc_partuuid[2][0] == L'\0') {
+        Print(L"StratBoot: Missing CONFIG / STRAT_CACHE / HOME PARTUUID(s)\n");
+        halt_with_message(system_table, &gop, "STRAT OS", "Storage layout incomplete");
+        return EFI_ABORTED;
+    }
+
 #ifdef DEBUG
     debugcon_log("StratBoot: booting slot\n");
     serial_log(system_table, "StratBoot: booting slot\n");
 #endif
     Print(L"StratBoot: booting slot\n");
     draw_status(&gop, "STRAT OS", "Booting selected slot");
-    status = start_kernel_efi(image, system_table, kpath, rootdev, initrd);
+    status = start_kernel_efi(
+        image,
+        system_table,
+        kpath,
+        rootdev,
+        misc_partuuid[0],
+        misc_partuuid[1],
+        misc_partuuid[2],
+        initrd
+    );
     if (status != EFI_SUCCESS) {
         halt_with_message(system_table, &gop, "STRAT OS", "Kernel load failed");
         return EFI_ABORTED;

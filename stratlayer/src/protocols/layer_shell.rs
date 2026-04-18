@@ -64,6 +64,21 @@ impl ZwlrLayerSurfaceV1 {
         let _ = socket.send(&msg.serialize());
     }
 
+    /// `zwlr_layer_surface_v1.set_margin` (top, right, bottom, left) — version 1+.
+    pub fn set_margin(&self, top: i32, right: i32, bottom: i32, left: i32, socket: &WaylandSocket) {
+        let msg = Message::new(
+            self.id,
+            3,
+            vec![
+                Argument::Int(top),
+                Argument::Int(right),
+                Argument::Int(bottom),
+                Argument::Int(left),
+            ],
+        );
+        let _ = socket.send(&msg.serialize());
+    }
+
     pub fn set_keyboard_interactivity(&self, mode: u32, socket: &WaylandSocket) {
         let msg = Message::new(self.id, 4, vec![Argument::Uint(mode)]);
         let _ = socket.send(&msg.serialize());
