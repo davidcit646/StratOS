@@ -108,7 +108,7 @@
 
 ### Phase 15: Network Stack Minimalist
 - [x] Implement custom wrapper for network interface management (strat-network as stratman child)
-- [~] Build minimalist DHCP client (framework in place, DHCP protocol implementation pending)
+- [x] Build minimalist DHCP client (DORA implementation with lease renewal, rebind, release)
 - [ ] Create StratMon integration for secure HTTPS downloads
 - [x] Kernel networking support (CONFIG_NET, CONFIG_INET, Ethernet + WiFi drivers)
 
@@ -131,6 +131,12 @@
 - [ ] Build minimalist "Safe Mode" boot target
 - [ ] Implement "Factory Reset" (Wipe `/config` and `/cache`)
 - [ ] Create manual slot-repair tool for StratBoot
+
+### Phase 22: Build System
+- [x] Create unified build script (build-all-and-run.sh) — single script builds kernel, EFI, compositor, apps, initramfs, rootfs, EROFS, disk image, launches QEMU
+- [x] Inline all build logic — no external script dependencies
+- [x] Add GCC15 compatibility shims for kernel build
+- [x] Configure logging to qemu_strattest.log
 
 ### Phase 20: Final System Integration
 - [ ] Implement system-wide theme/asset manager
