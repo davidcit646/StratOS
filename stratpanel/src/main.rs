@@ -343,9 +343,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 9: Main event loop
     loop {
-        // Fetch workspaces once per second
+        // Fetch workspaces and update clock once per second
         if last_workspace_fetch.elapsed() >= Duration::from_secs(1) {
             workspaces = ipc.get_workspaces();
+            clock.tick(&config.clock.format, config.clock.show_date);
+            let clock_text = clock.text();
+            if clock_text != last_clock_text {
+                last_clock_text = clock_text.to_string();
+                needs_commit = true; // Clock changed
+            }
             last_workspace_fetch = Instant::now();
             needs_commit = true; // Workspace buttons changed
         }
@@ -357,13 +363,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if keyboard_focused {
                 needs_commit = true; // Cursor visibility changed
             }
-        }
-
-        clock.tick(&config.clock.format, config.clock.show_date);
-        let clock_text = clock.text();
-        if clock_text != last_clock_text {
-            last_clock_text = clock_text.to_string();
-            needs_commit = true; // Clock changed
         }
 
         // Only render and commit if something changed

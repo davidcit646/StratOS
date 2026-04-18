@@ -30,9 +30,9 @@ impl Clock {
         let time_str = if format == "12hr" {
             let hour_12 = if hour % 12 == 0 { 12 } else { hour % 12 };
             let ampm = if hour < 12 { "AM" } else { "PM" };
-            format!("{:02}:{:02}:{:02} {}", hour_12, minute, second, ampm)
+            format!("{:02}:{:02} {}", hour_12, minute, ampm)
         } else {
-            format!("{:02}:{:02}:{:02}", hour, minute, second)
+            format!("{:02}:{:02}", hour, minute)
         };
 
         if show_date {

@@ -731,8 +731,8 @@ static void layer_surface_configure(struct stratwm_layer_surface *layer) {
 }
 
 static void layer_surface_commit_notify(struct wl_listener *listener, void *data) {
-    (void)listener;
-    struct stratwm_layer_surface *layer = data;
+    (void)data;
+    struct stratwm_layer_surface *layer = wl_container_of(listener, layer, commit);
     layer_surface_configure(layer);
 }
 
