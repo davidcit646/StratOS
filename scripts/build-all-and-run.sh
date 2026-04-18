@@ -126,7 +126,7 @@ if [ $CLEAN_BUILD -eq 1 ]; then
     make clean
 fi
 make
-cp stratboot.efi "$PHASE3_DIR/BOOTX64.EFI"
+cp BOOTX64.EFI "$PHASE3_DIR/BOOTX64.EFI"
 log_ok "stratboot built -> $PHASE3_DIR/BOOTX64.EFI"
 
 # ============================================================================
