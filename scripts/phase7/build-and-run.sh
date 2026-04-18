@@ -7,13 +7,16 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOTFS_DIR="${SCRIPT_DIR}/../../out/phase7/rootfs-minimal"
 OUT_DIR="${SCRIPT_DIR}/../../out/phase7"
+LOG_FILE="${OUT_DIR}/qemu_strattest.log"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${YELLOW}=== StratOS Build & Run ===${NC}"
+echo -e "${BLUE}Log file: ${LOG_FILE}${NC}"
 
 # Check if clean build requested
 if [ "$1" = "--clean" ] || [ "$1" = "-c" ]; then
@@ -62,5 +65,6 @@ mkfs.erofs -zlz4hc slot-system.erofs rootfs-minimal
 
 # Run QEMU
 echo -e "${GREEN}Starting QEMU...${NC}"
+echo -e "${BLUE}Logging to: ${LOG_FILE}${NC}"
 cd "${SCRIPT_DIR}/../.."
-exec ./scripts/phase7/run-qemu-desktop.sh
+./scripts/phase7/run-qemu-desktop.sh 2>&1 | tee "${LOG_FILE}"

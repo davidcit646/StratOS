@@ -6,6 +6,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$REPO_ROOT/out/phase7"
+LOG_FILE="$OUT_DIR/qemu_strattest.log"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -161,4 +162,5 @@ log_ok "Test disk updated"
 
 # Run QEMU
 log_info "Starting QEMU..."
-exec "$REPO_ROOT/scripts/phase7/run-qemu-desktop.sh"
+log_info "Logging to: $LOG_FILE"
+"$REPO_ROOT/scripts/phase7/run-qemu-desktop.sh" 2>&1 | tee "$LOG_FILE"
