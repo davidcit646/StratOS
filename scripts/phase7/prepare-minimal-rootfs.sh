@@ -427,6 +427,7 @@ if [ -x "$ROOTFS_DIR/bin/sh" ]; then
 fi
 if [ -x "$ROOTFS_DIR/bin/stratwm" ]; then
     find_and_stage_required_lib "libwlroots-0.19.so"
+    find_and_stage_required_lib "libevdev.so.2"
 fi
 if [ -x "$ROOTFS_DIR/bin/foot" ]; then
     find_and_stage_required_lib "libwayland-cursor.so.0"

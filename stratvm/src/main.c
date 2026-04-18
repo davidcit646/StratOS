@@ -1,11 +1,15 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/input-event-codes.h>
+#include <linux/netlink.h>
 #include <spawn.h>
 #include <assert.h>
 #include <sys/un.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +17,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <libevdev/libevdev.h>
 
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
@@ -28,11 +33,14 @@
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/interfaces/wlr_keyboard.h>
+#include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
 
@@ -77,6 +85,34 @@ struct stratwm_keyboard {
     struct wl_listener modifiers;
     struct wl_listener key;
     struct wl_listener destroy;
+};
+
+/* Direct evdev input device (bypassing libinput/udev) */
+#define MAX_EVDEV_DEVICES 16
+#define UEVENT_BUFFER_SIZE 2048
+
+struct stratwm_evdev_device {
+    struct wl_list link;
+    struct stratwm_server *server;
+    char path[256];
+    int fd;
+    struct libevdev *evdev;
+    struct wl_event_source *event_source;
+    bool is_keyboard;
+    bool is_pointer;
+
+    /* Wlroots device - either keyboard or pointer */
+    union {
+        struct wlr_keyboard *keyboard;
+        struct wlr_pointer *pointer;
+        struct wlr_input_device *device;
+    } wlr;
+};
+
+struct stratwm_input_manager {
+    struct wl_list devices;  /* stratwm_evdev_device.link */
+    int uevent_fd;           /* netlink socket for hotplug */
+    struct wl_event_source *uevent_source;
 };
 
 static const float STRAT_BG[4] = {0.102f, 0.102f, 0.180f, 1.0f};
@@ -1653,6 +1689,11 @@ static void ipc_read_client(struct stratwm_server *server, struct stratwm_ipc *i
     }
 }
 
+/* Direct evdev input manager (bypasses udev/libinput) */
+static int input_manager_init(struct stratwm_server *server);
+static void input_manager_probe_devices(struct stratwm_server *server);
+static void input_manager_destroy(struct stratwm_server *server);
+
 static int ipc_handle_event(int fd, uint32_t mask, void *data);
 
 static void ipc_accept_client(struct stratwm_server *server) {
@@ -1816,6 +1857,9 @@ int main(void) {
         return 1;
     }
 
+    /* Initialize direct evdev input (bypasses udev/libinput) */
+    input_manager_init(&server);
+
 #ifdef DEBUG
     fprintf(stderr, "stratwm: started (%s)\n", socket);
 #endif
@@ -1844,5 +1888,402 @@ int main(void) {
         }
     }
 
+    input_manager_destroy(&server);
+
     return 0;
+}
+
+/* ============================================================================
+ * Direct evdev input manager - bypasses udev/libinput
+ * ============================================================================ */
+
+static struct stratwm_input_manager g_input_manager = {0};
+
+static int uevent_open_socket(void) {
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_KOBJECT_UEVENT);
+    if (fd < 0) return -1;
+
+    struct sockaddr_nl addr = {
+        .nl_family = AF_NETLINK,
+        .nl_pid = getpid(),
+        .nl_groups = 1  /* Subscribe to kernel multicast group */
+    };
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+static bool is_input_device(const char *path) {
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) return false;
+
+    struct libevdev *evdev = NULL;
+    int rc = libevdev_new_from_fd(fd, &evdev);
+    if (rc < 0) {
+        close(fd);
+        return false;
+    }
+
+    bool has_keys = libevdev_has_event_type(evdev, EV_KEY);
+    bool has_rel = libevdev_has_event_type(evdev, EV_REL);
+    bool has_abs = libevdev_has_event_type(evdev, EV_ABS);
+
+    /* Keyboard: has keys, no relative/absolute motion */
+    /* Pointer: has relative motion (mouse) or absolute (touchpad) */
+    bool is_kbd = has_keys && !has_rel && !has_abs;
+    bool is_ptr = has_rel || (has_abs && !has_keys);
+
+    libevdev_free(evdev);
+    close(fd);
+
+    return is_kbd || is_ptr;
+}
+
+static int evdev_device_event(int fd, uint32_t mask, void *data);
+
+static struct stratwm_evdev_device *evdev_device_create(
+    struct stratwm_server *server, const char *path) {
+
+    struct stratwm_evdev_device *dev = calloc(1, sizeof(*dev));
+    if (!dev) return NULL;
+
+    dev->server = server;
+    strncpy(dev->path, path, sizeof(dev->path) - 1);
+    dev->fd = -1;
+
+    /* Open with wlr_session to handle permissions via seatd */
+    /* Note: wlr_session_open_file requires a wlr_session, which we get from backend */
+    /* For now, open directly - seatd should have set permissions */
+    dev->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (dev->fd < 0) {
+        free(dev);
+        return NULL;
+    }
+
+    int rc = libevdev_new_from_fd(dev->fd, &dev->evdev);
+    if (rc < 0) {
+        close(dev->fd);
+        free(dev);
+        return NULL;
+    }
+
+    /* Determine device type */
+    bool has_keys = libevdev_has_event_type(dev->evdev, EV_KEY);
+    bool has_rel = libevdev_has_event_type(dev->evdev, EV_REL);
+    bool has_abs = libevdev_has_event_type(dev->evdev, EV_ABS);
+
+    dev->is_keyboard = has_keys && !has_rel && !has_abs;
+    dev->is_pointer = has_rel || (has_abs && !has_keys);
+
+    /* Create wlroots input device */
+    if (dev->is_keyboard) {
+        struct wlr_keyboard *kbd = calloc(1, sizeof(*kbd));
+        if (!kbd) goto fail;
+
+        wlr_keyboard_init(kbd, NULL, path);
+
+        /* Set up keymap */
+        struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
+            XKB_KEYMAP_COMPILE_NO_FLAGS);
+        wlr_keyboard_set_keymap(kbd, keymap);
+        xkb_keymap_unref(keymap);
+        xkb_context_unref(context);
+
+        wlr_keyboard_set_repeat_info(kbd, 25, 600);
+        dev->wlr.keyboard = kbd;
+
+        /* Emit new_input signal */
+        wl_signal_emit(&server->backend->events.new_input, &kbd->base);
+    } else if (dev->is_pointer) {
+        struct wlr_pointer *ptr = calloc(1, sizeof(*ptr));
+        if (!ptr) goto fail;
+
+        wlr_pointer_init(ptr, NULL, path);
+        dev->wlr.pointer = ptr;
+
+        /* Emit new_input signal */
+        wl_signal_emit(&server->backend->events.new_input, &ptr->base);
+    }
+
+    /* Add to event loop */
+    dev->event_source = wl_event_loop_add_fd(
+        wl_display_get_event_loop(server->wl_display),
+        dev->fd, WL_EVENT_READABLE, evdev_device_event, dev);
+
+    wl_list_insert(&g_input_manager.devices, &dev->link);
+    goto success;
+
+fail:
+    if (dev->evdev) libevdev_free(dev->evdev);
+    if (dev->fd >= 0) close(dev->fd);
+    free(dev);
+    return NULL;
+
+success:
+    fprintf(stderr, "stratwm: evdev opened %s (kbd=%d, ptr=%d)\n",
+            path, dev->is_keyboard, dev->is_pointer);
+
+    return dev;
+}
+
+static void evdev_device_destroy(struct stratwm_evdev_device *dev) {
+    if (!dev) return;
+
+    /* Clean up wlroots device */
+    if (dev->wlr.device) {
+        wl_signal_emit(&dev->wlr.device->events.destroy, dev->wlr.device);
+        if (dev->is_keyboard) {
+            wlr_keyboard_finish(dev->wlr.keyboard);
+            free(dev->wlr.keyboard);
+        } else if (dev->is_pointer) {
+            wlr_pointer_finish(dev->wlr.pointer);
+            free(dev->wlr.pointer);
+        }
+    }
+
+    if (dev->event_source) {
+        wl_event_source_remove(dev->event_source);
+    }
+    if (dev->evdev) {
+        libevdev_free(dev->evdev);
+    }
+    if (dev->fd >= 0) {
+        close(dev->fd);
+    }
+
+    wl_list_remove(&dev->link);
+    free(dev);
+}
+
+static int evdev_device_event(int fd, uint32_t mask, void *data) {
+    (void)mask;
+    struct stratwm_evdev_device *dev = data;
+    struct input_event ev;
+    static double accum_dx = 0, accum_dy = 0;
+
+    while (libevdev_next_event(dev->evdev, LIBEVDEV_READ_FLAG_NORMAL, &ev) == LIBEVDEV_READ_STATUS_SUCCESS) {
+        if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+            /* Send accumulated pointer motion on SYN_REPORT */
+            if (dev->is_pointer && (accum_dx != 0 || accum_dy != 0)) {
+                struct wlr_pointer_motion_event motion = {
+                    .pointer = dev->wlr.pointer,
+                    .time_msec = ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000,
+                    .delta_x = accum_dx,
+                    .delta_y = accum_dy,
+                    .unaccel_dx = accum_dx,
+                    .unaccel_dy = accum_dy
+                };
+                wl_signal_emit(&dev->wlr.pointer->events.motion, &motion);
+                accum_dx = 0;
+                accum_dy = 0;
+            }
+            continue;
+        }
+
+        /* Handle keyboard events */
+        if (dev->is_keyboard && ev.type == EV_KEY) {
+            /* Convert evdev keycode to libinput/Wayland keycode (offset by 8) */
+            uint32_t keycode = ev.code + 8;
+
+            struct wlr_keyboard_key_event key_event = {
+                .time_msec = ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000,
+                .keycode = keycode,
+                .update_state = true,
+                .state = ev.value ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED
+            };
+
+            /* Update xkb state */
+            if (dev->wlr.keyboard->xkb_state) {
+                xkb_state_update_key(dev->wlr.keyboard->xkb_state,
+                    keycode + 8, ev.value ? XKB_KEY_DOWN : XKB_KEY_UP);
+            }
+
+            wl_signal_emit(&dev->wlr.keyboard->events.key, &key_event);
+
+            /* Update and emit modifiers */
+            if (dev->wlr.keyboard->xkb_state) {
+                struct wlr_keyboard_modifiers mods = {
+                    .depressed = xkb_state_serialize_mods(dev->wlr.keyboard->xkb_state, XKB_STATE_MODS_DEPRESSED),
+                    .latched = xkb_state_serialize_mods(dev->wlr.keyboard->xkb_state, XKB_STATE_MODS_LATCHED),
+                    .locked = xkb_state_serialize_mods(dev->wlr.keyboard->xkb_state, XKB_STATE_MODS_LOCKED),
+                    .group = xkb_state_serialize_layout(dev->wlr.keyboard->xkb_state, XKB_STATE_LAYOUT_EFFECTIVE)
+                };
+                if (memcmp(&mods, &dev->wlr.keyboard->modifiers, sizeof(mods)) != 0) {
+                    dev->wlr.keyboard->modifiers = mods;
+                    wlr_keyboard_notify_modifiers(dev->wlr.keyboard,
+                        mods.depressed, mods.latched, mods.locked, mods.group);
+                }
+            }
+        }
+        /* Handle pointer motion (accumulate for SYN_REPORT) */
+        else if (dev->is_pointer && ev.type == EV_REL) {
+            if (ev.code == REL_X) {
+                accum_dx += ev.value;
+            } else if (ev.code == REL_Y) {
+                accum_dy += ev.value;
+            }
+        }
+        /* Handle pointer buttons */
+        else if (dev->is_pointer && ev.type == EV_KEY) {
+            /* Convert Linux button codes (BTN_*) to wayland codes */
+            uint32_t button;
+            switch (ev.code) {
+                case BTN_LEFT: button = BTN_LEFT; break;
+                case BTN_RIGHT: button = BTN_RIGHT; break;
+                case BTN_MIDDLE: button = BTN_MIDDLE; break;
+                default: button = ev.code; break;
+            }
+
+            struct wlr_pointer_button_event btn = {
+                .pointer = dev->wlr.pointer,
+                .time_msec = ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000,
+                .button = button,
+                .state = ev.value ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED
+            };
+            wl_signal_emit(&dev->wlr.pointer->events.button, &btn);
+        }
+    }
+
+    return 0;
+}
+
+static int uevent_handle(int fd, uint32_t mask, void *data) {
+    (void)data;
+    (void)mask;
+
+    char buf[UEVENT_BUFFER_SIZE];
+    ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) return 0;
+
+    buf[n] = '\0';
+
+    /* Parse uevent - look for add/change events for input devices */
+    if (strstr(buf, "@/devices") && strstr(buf, "/input")) {
+        char *action = buf;  /* First line is action@path */
+        char *devpath = NULL;
+
+        /* Find DEVPATH in the message */
+        char *p = buf;
+        while (*p) {
+            if (strncmp(p, "DEVPATH=", 8) == 0) {
+                devpath = p + 8;
+                break;
+            }
+            p += strlen(p) + 1;
+        }
+
+        if (devpath && strncmp(action, "add@", 4) == 0) {
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "/sys%s/event", devpath);
+
+            /* Find the event device node */
+            DIR *dir = opendir(full_path);
+            if (dir) {
+                struct dirent *entry;
+                while ((entry = readdir(dir)) != NULL) {
+                    if (strncmp(entry->d_name, "event", 5) == 0) {
+                        char device_path[512];
+                        snprintf(device_path, sizeof(device_path),
+                                 "/dev/input/%s", entry->d_name);
+
+                        /* Check if already known */
+                        struct stratwm_evdev_device *dev;
+                        wl_list_for_each(dev, &g_input_manager.devices, link) {
+                            if (strcmp(dev->path, device_path) == 0) {
+                                goto skip;
+                            }
+                        }
+
+                        if (is_input_device(device_path)) {
+                            evdev_device_create((struct stratwm_server *)data, device_path);
+                        }
+                    skip:
+                        break;
+                    }
+                }
+                closedir(dir);
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int input_manager_init(struct stratwm_server *server) {
+    wl_list_init(&g_input_manager.devices);
+
+    /* Open uevent socket for hotplug */
+    g_input_manager.uevent_fd = uevent_open_socket();
+    if (g_input_manager.uevent_fd >= 0) {
+        g_input_manager.uevent_source = wl_event_loop_add_fd(
+            wl_display_get_event_loop(server->wl_display),
+            g_input_manager.uevent_fd,
+            WL_EVENT_READABLE,
+            uevent_handle,
+            server);
+    }
+
+    /* Probe existing devices */
+    input_manager_probe_devices(server);
+
+    fprintf(stderr, "stratwm: input manager initialized, uevent_fd=%d\n",
+            g_input_manager.uevent_fd);
+
+    return 0;
+}
+
+static void input_manager_probe_devices(struct stratwm_server *server) {
+    DIR *dir = opendir("/dev/input");
+    if (!dir) {
+        fprintf(stderr, "stratwm: /dev/input not found\n");
+        return;
+    }
+
+    fprintf(stderr, "stratwm: scanning /dev/input for devices...\n");
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, "event", 5) != 0) continue;
+
+        char path[256];
+        snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+
+        /* Check if already known */
+        struct stratwm_evdev_device *dev;
+        bool found = false;
+        wl_list_for_each(dev, &g_input_manager.devices, link) {
+            if (strcmp(dev->path, path) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found) continue;
+
+        if (is_input_device(path)) {
+            evdev_device_create(server, path);
+        }
+    }
+
+    closedir(dir);
+}
+
+static void input_manager_destroy(struct stratwm_server *server) {
+    (void)server;
+
+    struct stratwm_evdev_device *dev, *tmp;
+    wl_list_for_each_safe(dev, tmp, &g_input_manager.devices, link) {
+        evdev_device_destroy(dev);
+    }
+
+    if (g_input_manager.uevent_source) {
+        wl_event_source_remove(g_input_manager.uevent_source);
+    }
+    if (g_input_manager.uevent_fd >= 0) {
+        close(g_input_manager.uevent_fd);
+    }
 }

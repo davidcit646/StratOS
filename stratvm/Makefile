@@ -18,7 +18,7 @@ WLR_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols 2>/de
 ifeq ($(strip $(WLR_PROTO_DIR)),)
 WLR_PROTO_DIR := /usr/share/wlr-protocols
 endif
-PKGS := $(WLROOTS_PKG) wayland-server xkbcommon pixman-1 libinput
+PKGS := $(WLROOTS_PKG) wayland-server xkbcommon pixman-1 libinput libevdev
 
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -g
 CPPFLAGS += -DWLR_USE_UNSTABLE $(shell $(PKG_CONFIG) --cflags $(PKGS)) -I.

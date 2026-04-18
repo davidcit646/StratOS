@@ -74,10 +74,10 @@
 ### Phase 24: Panel
 - [x] Implement panel binary (top bar, always-on-top Wayland layer surface)
 - [ ] Build pinned app launcher with scrollable strip
-- [ ] Build workspace switcher (click to switch, drag window to workspace)
+- [x] Build workspace switcher (click to switch, drag window to workspace)
 - [ ] Build system tray (clock, volume, network, battery, brightness, updates)
 - [ ] Implement auto-hide (slide up on mouse leave, slide down on top edge)
-- [ ] Wire panel IPC to stratvm socket (/run/stratvm.sock)
+- [x] Wire panel IPC to stratvm socket (/run/stratvm.sock)
 - [x] Implement panel.conf TOML config reader (/config/strat/panel.conf)
 
 ### Phase 25: Window Management
