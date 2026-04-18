@@ -1,5 +1,7 @@
 # StratOS: Triple-Slot Atomic Workstation
 
+> **Note:** Partition letters (D/E) below are a shorthand. **Authoritative** GPT names, mount paths, and persistence rules are in [stratos-design.md](stratos-design.md) and [runtime-persistence-contract.md](runtime-persistence-contract.md) (for example CONFIG, STRAT_CACHE, HOME).
+
 StratOS is a custom-engineered, image-based Linux architecture designed for total immutability and maintenance-driven stability. It discards the legacy GNU/Systemd filesystem hierarchy in favor of a Triple-Slot (A/B/C) system image model managed by the `stratboot` loader and `stratman` PID1.
 
 ## 1. The Boot & Execution Stack
@@ -55,7 +57,7 @@ StratOS eliminates legacy symlinks (`/bin`, `/lib`, `/etc`). The root scaffold i
     ├── log/     # Ephemeral logs
     └── run/     # Sockets and PIDs
 
-3. Key Differentiators
+## 3. Key Differentiators
 
 **Triple-Buffer System (A/B/C)**
 While traditional atomic systems use A/B, StratOS uses three slots to allow for a Staging slot (new update), a Confirmed slot (current stable), and a Safe slot (immutable fallback) to exist simultaneously on disk.
@@ -72,10 +74,10 @@ Updates do not interrupt the user. stratman identifies idle windows to:
 
 If the user returns during a maintenance window, stratman immediately defers the task and reverts to a Read-Only state.
 
-**Stateless Configuration**
-The system contains no /etc. All system logic is derived from Partition D (/config). This ensures that the system is "Stateless"—if you swap the System Image (A to B), your configuration remains identical because it is sourced from a dedicated hardware-locked partition.
+**Stateless configuration (concept)**  
+Persistent machine state lives on the CONFIG partition (and related contracts); the read-only system image can be swapped without carrying mutable `/etc` on the slot.
 
-4. Maintenance Tooling: StratMon
+## 4. Maintenance Tooling: StratMon
 
 stratmon is the primary interface for managing the system state from user-space.
 

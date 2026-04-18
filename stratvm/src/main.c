@@ -71,7 +71,8 @@ struct stratwm_view {
     struct wlr_scene_rect *close_button;    /* Close button (X) */
     struct wlr_scene_rect *max_button;      /* Maximize button */
     struct wlr_scene_rect *min_button;      /* Minimize button */
-    
+    bool decorations_visible;               /* Titlebar + window controls (right-click toggles) */
+
     struct wl_listener map;
     struct wl_listener unmap;
     struct wl_listener commit;
@@ -119,6 +120,12 @@ struct stratwm_input_manager {
 static const float STRAT_BG[4] = {0.102f, 0.102f, 0.180f, 1.0f};
 static void update_view_border(struct stratwm_view *view, bool focused);
 static void update_titlebar_buttons(struct stratwm_view *view, int width);
+static uint32_t stratwm_seat_modifiers(struct stratwm_server *server);
+static void set_view_decorations_visible(struct stratwm_view *view, bool visible);
+static bool titlebar_context_region(struct stratwm_view *view, double vx, double vy);
+static void move_view_to_workspace(struct stratwm_server *server, struct stratwm_view *view, int new_id);
+static void stratwm_load_deco_config(struct stratwm_server *server);
+static void stratwm_refresh_tiled_visibility(struct stratwm_server *server);
 
 static void spawn_terminal(void) {
     pid_t pid = fork();
@@ -216,6 +223,8 @@ static void focus_view(struct stratwm_view *view, struct wlr_surface *surface) {
     update_view_border(view, true);
     server->focused_view = view;
 
+    /* Raise only within layers_normal — view->scene_tree is a child of layers_normal,
+     * so this cannot paint above LAYER_TOP panel surfaces. */
     wlr_scene_node_raise_to_top(&view->scene_tree->node);
     wlr_seat_keyboard_notify_enter(server->seat, surface,
         keyboard ? keyboard->keycodes : NULL,
@@ -515,20 +524,22 @@ static void tile_reflow_scene(struct stratwm_tile *tile) {
         wlr_xdg_toplevel_set_size(tile->view->xdg_toplevel,
             tile->geometry.width, tile->geometry.height);
 
-        /* Keep border aligned with tile size (2px outside on each edge). */
+        /* Keep border aligned with tile size (pad outside on each edge). */
         if (tile->view->border) {
-            int bw = tile->geometry.width + 4;
-            int bh = tile->geometry.height + 4;
+            int pad = tile->view->server->deco_border_pad;
+            int bw = tile->geometry.width + 2 * pad;
+            int bh = tile->geometry.height + 2 * pad;
             if (bw < 1) bw = 1;
             if (bh < 1) bh = 1;
             wlr_scene_rect_set_size(tile->view->border, bw, bh);
-            wlr_scene_node_set_position(&tile->view->border->node, -2, -2);
+            wlr_scene_node_set_position(&tile->view->border->node, -pad, -pad);
         }
 
         /* Update titlebar size and button positions (Phase 8.8) */
         if (tile->view->titlebar_bg) {
-            wlr_scene_rect_set_size(tile->view->titlebar_bg, tile->geometry.width, 24);
-            wlr_scene_node_set_position(&tile->view->titlebar_bg->node, 0, -24);
+            int th = tile->view->server->deco_titlebar_h;
+            wlr_scene_rect_set_size(tile->view->titlebar_bg, tile->geometry.width, th);
+            wlr_scene_node_set_position(&tile->view->titlebar_bg->node, 0, -th);
         }
         update_titlebar_buttons(tile->view, tile->geometry.width);
     }
@@ -654,6 +665,7 @@ static void update_view_border(struct stratwm_view *view, bool focused) {
 static bool point_in_titlebar_button(struct wlr_scene_rect *button,
     double view_x, double view_y) {
     if (!button) return false;
+    if (!wlr_scene_node_is_enabled(&button->node)) return false;
     int bx = button->node.x;
     int by = button->node.y;
     return view_x >= bx && view_x < bx + 16 && view_y >= by && view_y < by + 16;
@@ -663,10 +675,11 @@ static bool point_in_titlebar_button(struct wlr_scene_rect *button,
 static void update_titlebar_buttons(struct stratwm_view *view, int width) {
     if (!view) return;
 
+    int th = view->server->deco_titlebar_h;
     int padding = 8;       /* Right edge padding */
     int btn_size = 16;     /* Button size */
     int btn_gap = 4;       /* Gap between buttons */
-    int y_pos = -20;       /* Y position (centered in 24px titlebar) */
+    int y_pos = -(th - 4); /* Near top of titlebar band */
 
     int close_x = width - padding - btn_size;
     int max_x = close_x - btn_size - btn_gap;
@@ -690,11 +703,12 @@ static void update_titlebar_buttons(struct stratwm_view *view, int width) {
 static void create_titlebar(struct stratwm_view *view) {
     if (!view) return;
 
-    /* Titlebar background: dark gradient-like, 24px height */
+    int th = view->server->deco_titlebar_h;
+    /* Titlebar background: dark slate band above the client surface */
     float bg_color[4] = {0.12f, 0.13f, 0.18f, 1.0f};  /* Dark slate */
-    view->titlebar_bg = wlr_scene_rect_create(view->scene_tree, 100, 24, bg_color);
+    view->titlebar_bg = wlr_scene_rect_create(view->scene_tree, 100, th, bg_color);
     if (view->titlebar_bg) {
-        wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -24);  /* Above window */
+        wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -th);  /* Above window */
     }
 
     /* Close button: vibrant red */
@@ -711,6 +725,7 @@ static void create_titlebar(struct stratwm_view *view) {
 
     /* Initial button positioning (will be updated when window sizes) */
     update_titlebar_buttons(view, 100);
+    set_view_decorations_visible(view, true);
 }
 
 static void destroy_titlebar(struct stratwm_view *view) {
@@ -732,6 +747,174 @@ static void destroy_titlebar(struct stratwm_view *view) {
         wlr_scene_node_destroy(&view->min_button->node);
         view->min_button = NULL;
     }
+}
+
+static uint32_t stratwm_seat_modifiers(struct stratwm_server *server) {
+    struct wlr_keyboard *kb = wlr_seat_get_keyboard(server->seat);
+    if (kb == NULL) {
+        return 0;
+    }
+    return wlr_keyboard_get_modifiers(kb);
+}
+
+static void set_view_decorations_visible(struct stratwm_view *view, bool visible) {
+    if (!view) {
+        return;
+    }
+    view->decorations_visible = visible;
+    if (view->titlebar_bg) {
+        wlr_scene_node_set_enabled(&view->titlebar_bg->node, visible);
+    }
+    if (view->close_button) {
+        wlr_scene_node_set_enabled(&view->close_button->node, visible);
+    }
+    if (view->max_button) {
+        wlr_scene_node_set_enabled(&view->max_button->node, visible);
+    }
+    if (view->min_button) {
+        wlr_scene_node_set_enabled(&view->min_button->node, visible);
+    }
+    if (view->border) {
+        wlr_scene_node_set_enabled(&view->border->node, visible);
+    }
+}
+
+static bool titlebar_context_region(struct stratwm_view *view, double vx, double vy) {
+    if (!view || !view->titlebar_bg) {
+        return false;
+    }
+    int th = view->server->deco_titlebar_h;
+    if (vy < (double)-th || vy >= 0.0) {
+        return false;
+    }
+    if (vx < 0.0 || vx >= (double)view->xdg_toplevel->current.width) {
+        return false;
+    }
+    if (point_in_titlebar_button(view->close_button, vx, vy)) {
+        return false;
+    }
+    if (point_in_titlebar_button(view->max_button, vx, vy)) {
+        return false;
+    }
+    if (point_in_titlebar_button(view->min_button, vx, vy)) {
+        return false;
+    }
+    return true;
+}
+
+static void stratwm_refresh_tiled_visibility(struct stratwm_server *server) {
+    struct stratwm_workspace *ws = &server->workspaces[server->current_workspace];
+    struct stratwm_view *v;
+    wl_list_for_each(v, &server->views, link) {
+        if (v->workspace_id != server->current_workspace || v->is_floating) {
+            continue;
+        }
+        bool visible = true;
+        switch (ws->layout) {
+        case LAYOUT_BSP:
+            visible = true;
+            break;
+        case LAYOUT_STACK:
+        case LAYOUT_FULLSCREEN:
+            visible = (v == server->focused_view);
+            break;
+        }
+        wlr_scene_node_set_enabled(&v->scene_tree->node, visible);
+    }
+}
+
+static void move_view_to_workspace(struct stratwm_server *server, struct stratwm_view *view, int new_id) {
+    if (!view || new_id < 0 || new_id >= STRATWM_WORKSPACES) {
+        return;
+    }
+    if (view->workspace_id == new_id) {
+        return;
+    }
+
+    int old_id = view->workspace_id;
+    struct stratwm_workspace *old_ws = &server->workspaces[old_id];
+    struct stratwm_workspace *new_ws = &server->workspaces[new_id];
+
+    if (!view->is_floating && old_ws->root) {
+        old_ws->root = tile_remove(old_ws->root, view);
+        tile_reflow_scene(old_ws->root);
+    }
+
+    view->workspace_id = new_id;
+
+    if (!view->is_floating) {
+        if (!new_ws->root) {
+            struct wlr_box output_box = {0, 0, 1920, 1080};
+            struct stratwm_output *output;
+            wl_list_for_each(output, &server->outputs, link) {
+                output_box.width = output->wlr_output->width;
+                output_box.height = output->wlr_output->height;
+                break;
+            }
+            int zone = get_top_exclusive_zone(server);
+            output_box.y += zone;
+            output_box.height -= zone;
+            new_ws->root = tile_new(output_box);
+        }
+        if (new_ws->root) {
+            new_ws->root = tile_insert(new_ws->root, view, new_ws->root->geometry);
+            tile_reflow_scene(new_ws->root);
+        }
+    }
+
+    bool on_current = (new_id == server->current_workspace);
+    if (view->is_floating) {
+        wlr_scene_node_set_enabled(&view->scene_tree->node, on_current);
+    } else if (on_current) {
+        stratwm_refresh_tiled_visibility(server);
+    } else {
+        wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+    }
+
+    if (server->focused_view == view && !on_current) {
+        update_view_border(view, false);
+        server->focused_view = NULL;
+        struct stratwm_view *v;
+        wl_list_for_each(v, &server->views, link) {
+            if (v->workspace_id == server->current_workspace) {
+                focus_view(v, v->xdg_toplevel->base->surface);
+                break;
+            }
+        }
+        stratwm_refresh_tiled_visibility(server);
+    } else if (server->focused_view == view && on_current) {
+        focus_view(view, view->xdg_toplevel->base->surface);
+        stratwm_refresh_tiled_visibility(server);
+    }
+}
+
+static void stratwm_load_deco_config(struct stratwm_server *server) {
+    FILE *f = fopen("/config/strat/stratvm.conf", "r");
+    if (f == NULL) {
+        return;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), f) != NULL) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (*p == '#' || *p == '\n' || *p == '\0') {
+            continue;
+        }
+        if (strncmp(p, "titlebar_height=", 17) == 0) {
+            int v = atoi(p + 17);
+            if (v >= 12 && v <= 64) {
+                server->deco_titlebar_h = v;
+            }
+        } else if (strncmp(p, "border_pad=", 12) == 0) {
+            int v = atoi(p + 12);
+            if (v >= 0 && v <= 12) {
+                server->deco_border_pad = v;
+            }
+        }
+    }
+    fclose(f);
 }
 
 /* Layer shell handlers (Phase 24a) */
@@ -939,7 +1122,8 @@ static void server_new_output_notify(struct wl_listener *listener, void *data) {
     output->server = server;
     output->wlr_output = wlr_output;
     output->scene_output = wlr_scene_output_create(server->scene, wlr_output);
-    output->background = wlr_scene_rect_create(&server->scene->tree, 1, 1, STRAT_BG);
+    /* Parent to layers_bg so wallpaper stays below layer-shell (panel) and xdg clients. */
+    output->background = wlr_scene_rect_create(server->layers_bg, 1, 1, STRAT_BG);
     update_output_background(output);
 
     wlr_output_layout_add_auto(server->output_layout, wlr_output);
@@ -973,10 +1157,11 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
     }
 
     /* Create window border decoration (Phase 8.3) */
+    int pad = server->deco_border_pad;
     float border_color[4] = {0.267f, 0.267f, 0.267f, 1.0f};  /* default unfocused: dark gray */
     view->border = wlr_scene_rect_create(view->scene_tree, 1, 1, border_color);
     if (view->border) {
-        wlr_scene_node_set_position(&view->border->node, -2, -2);
+        wlr_scene_node_set_position(&view->border->node, -pad, -pad);
         wlr_scene_node_lower_to_bottom(&view->border->node);
     }
 
@@ -991,16 +1176,25 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
         /* Floating window: render at fixed position, not in tree */
         wlr_scene_node_set_position(&view->scene_tree->node,
             view->float_x, view->float_y);
+        int fw = view->xdg_toplevel->current.width;
+        int fh = view->xdg_toplevel->current.height;
+        if (fw <= 0) {
+            fw = 800;
+        }
+        if (fh <= 0) {
+            fh = 600;
+        }
+        int th = server->deco_titlebar_h;
         if (view->border) {
-            wlr_scene_rect_set_size(view->border, 804, 604);
-            wlr_scene_node_set_position(&view->border->node, -2, -2);
+            wlr_scene_rect_set_size(view->border, fw + 2 * pad, fh + 2 * pad);
+            wlr_scene_node_set_position(&view->border->node, -pad, -pad);
         }
         /* Size titlebar for floating window */
         if (view->titlebar_bg) {
-            wlr_scene_rect_set_size(view->titlebar_bg, 800, 24);
-            wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -24);
+            wlr_scene_rect_set_size(view->titlebar_bg, fw, th);
+            wlr_scene_node_set_position(&view->titlebar_bg->node, 0, -th);
         }
-        update_titlebar_buttons(view, 800);
+        update_titlebar_buttons(view, fw);
     } else {
         /* Tiled window: insert into BSP tree */
         if (!ws->root) {
@@ -1115,16 +1309,19 @@ static void view_unmap_notify(struct wl_listener *listener, void *data) {
 static void view_request_move_notify(struct wl_listener *listener, void *data) {
     struct stratwm_view *view = wl_container_of(listener, view, request_move);
     struct stratwm_server *server = view->server;
-    struct wlr_xdg_toplevel_move_event *event = data;
-    
-    /* Only allow move for floating windows or when initiated via titlebar */
+    (void)data;
+
     if (!view->is_floating) {
-        /* Temporarily set floating mode for interactive move */
+        struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+        if (ws->root) {
+            ws->root = tile_remove(ws->root, view);
+            tile_reflow_scene(ws->root);
+        }
         view->is_floating = true;
         view->float_x = view->scene_tree->node.x;
         view->float_y = view->scene_tree->node.y;
     }
-    
+
     server->grabbed_view = view;
     server->grab_x = server->cursor->x;
     server->grab_y = server->cursor->y;
@@ -1298,6 +1495,10 @@ static void toggle_float(struct stratwm_server *server, struct stratwm_view *vie
             tile_reflow_scene(ws->root);
         }
     }
+
+    if (view->workspace_id == server->current_workspace) {
+        stratwm_refresh_tiled_visibility(server);
+    }
 }
 
 /* Maximize floating window to fill screen (Phase 8.5) */
@@ -1331,32 +1532,8 @@ static void cycle_layout(struct stratwm_server *server) {
     
     /* Cycle layout: BSP → Stack → Fullscreen → BSP */
     ws->layout = (ws->layout + 1) % 3;
-    
-    /* Update visibility of all windows based on new layout mode */
-    struct stratwm_view *view;
-    wl_list_for_each(view, &server->views, link) {
-        if (view->workspace_id != server->current_workspace || view->is_floating) {
-            continue; /* Skip views in other workspaces or floating windows */
-        }
-        
-        bool visible = true;
-        switch (ws->layout) {
-            case LAYOUT_BSP:
-                /* All tiled windows visible */
-                visible = true;
-                break;
-            case LAYOUT_STACK:
-                /* Only focused window visible in stack mode */
-                visible = (view == server->focused_view);
-                break;
-            case LAYOUT_FULLSCREEN:
-                /* Only focused window visible in fullscreen mode */
-                visible = (view == server->focused_view);
-                break;
-        }
-        
-        wlr_scene_node_set_enabled(&view->scene_tree->node, visible);
-    }
+
+    stratwm_refresh_tiled_visibility(server);
 }
 
 static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
@@ -1419,6 +1596,7 @@ static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
                 if (next && next->view) {
                     server->focused_view = next->view;
                     focus_view(next->view, next->view->xdg_toplevel->base->surface);
+                    stratwm_refresh_tiled_visibility(server);
                 }
             }
         }
@@ -1435,6 +1613,7 @@ static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
                 if (prev && prev->view) {
                     server->focused_view = prev->view;
                     focus_view(prev->view, prev->view->xdg_toplevel->base->surface);
+                    stratwm_refresh_tiled_visibility(server);
                 }
             }
         }
@@ -1546,58 +1725,58 @@ static void keyboard_destroy_notify(struct wl_listener *listener, void *data) {
     free(keyboard);
 }
 
-static void cursor_motion_notify(struct wl_listener *listener, void *data) {
-    struct stratwm_server *server = wl_container_of(listener, server, cursor_motion);
-    struct wlr_pointer_motion_event *event = data;
-
-    wlr_cursor_move(server->cursor, NULL, event->delta_x, event->delta_y);
-
-    /* Handle window drag */
-    if (server->grabbed_view) {
-        int dx = server->cursor->x - server->grab_x;
-        int dy = server->cursor->y - server->grab_y;
-        server->grabbed_view->float_x = server->grab_view_x + dx;
-        server->grabbed_view->float_y = server->grab_view_y + dy;
-        wlr_scene_node_set_position(&server->grabbed_view->scene_tree->node,
-            server->grabbed_view->float_x, server->grabbed_view->float_y);
+static void stratwm_apply_move_grab(struct stratwm_server *server) {
+    if (!server->grabbed_view) {
+        return;
     }
-
-    wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
-        server->cursor->x, server->cursor->y);
+    int dx = (int)(server->cursor->x - server->grab_x);
+    int dy = (int)(server->cursor->y - server->grab_y);
+    server->grabbed_view->float_x = server->grab_view_x + dx;
+    server->grabbed_view->float_y = server->grab_view_y + dy;
+    wlr_scene_node_set_position(&server->grabbed_view->scene_tree->node,
+        server->grabbed_view->float_x, server->grabbed_view->float_y);
 }
 
-static void cursor_motion_absolute_notify(struct wl_listener *listener, void *data) {
-    struct stratwm_server *server = wl_container_of(listener, server, cursor_motion_absolute);
-    struct wlr_pointer_motion_absolute_event *event = data;
-
-    wlr_cursor_warp_absolute(server->cursor, NULL, event->x, event->y);
-    wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
-        server->cursor->x, server->cursor->y);
-}
-
-static void cursor_button_notify(struct wl_listener *listener, void *data) {
-    struct stratwm_server *server = wl_container_of(listener, server, cursor_button);
-    struct wlr_pointer_button_event *event = data;
-
-    /* Handle grab release */
-    if (event->state == WL_POINTER_BUTTON_STATE_RELEASED && server->grabbed_view) {
+/* Compositor-side pointer grabs (titlebar) + libinput path; evdev reuses this. */
+static void stratwm_process_pointer_button(
+    struct stratwm_server *server,
+    uint32_t time_msec,
+    uint32_t button,
+    uint32_t state
+) {
+    if (state == WL_POINTER_BUTTON_STATE_RELEASED && server->grabbed_view
+        && button == BTN_LEFT) {
         server->grabbed_view = NULL;
-        wlr_seat_pointer_notify_button(server->seat, event->time_msec,
-            event->button, event->state);
+        wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
         return;
     }
 
-    /* Check for titlebar button clicks (Phase 8.8) */
-    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && server->focused_view) {
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED && server->focused_view) {
         struct stratwm_view *view = server->focused_view;
         double cursor_x = server->cursor->x;
         double cursor_y = server->cursor->y;
 
-        /* Convert to view-relative coordinates */
         double view_x = cursor_x - view->scene_tree->node.x;
         double view_y = cursor_y - view->scene_tree->node.y;
 
-        /* Dynamic hit-test based on current scene-node button positions. */
+        if (button == BTN_RIGHT && titlebar_context_region(view, view_x, view_y)) {
+            uint32_t mods = stratwm_seat_modifiers(server);
+            if (mods & WLR_MODIFIER_SHIFT) {
+                toggle_float(server, view);
+            } else if (mods & WLR_MODIFIER_LOGO) {
+                int n = (view->workspace_id + 1) % STRATWM_WORKSPACES;
+                move_view_to_workspace(server, view, n);
+            } else {
+                set_view_decorations_visible(view, !view->decorations_visible);
+            }
+            return;
+        }
+
+        if (button != BTN_LEFT) {
+            wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
+            return;
+        }
+
         if (point_in_titlebar_button(view->close_button, view_x, view_y)) {
             wlr_xdg_toplevel_send_close(view->xdg_toplevel);
             return;
@@ -1609,16 +1788,20 @@ static void cursor_button_notify(struct wl_listener *listener, void *data) {
         }
 
         if (point_in_titlebar_button(view->min_button, view_x, view_y)) {
-            /* For now, just close on minimize (can be improved later) */
             wlr_xdg_toplevel_send_close(view->xdg_toplevel);
             return;
         }
 
-        /* Check if click is on titlebar (not on buttons) */
-        if (view->titlebar_bg && view_x >= 0 && view_x < view->xdg_toplevel->current.width &&
-            view_y >= -24 && view_y < 0) {
-            /* Start titlebar drag */
+        int th = view->server->deco_titlebar_h;
+        if (view->decorations_visible && view->titlebar_bg
+            && view_x >= 0 && view_x < view->xdg_toplevel->current.width
+            && view_y >= (double)-th && view_y < 0) {
             if (!view->is_floating) {
+                struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+                if (ws->root) {
+                    ws->root = tile_remove(ws->root, view);
+                    tile_reflow_scene(ws->root);
+                }
                 view->is_floating = true;
                 view->float_x = view->scene_tree->node.x;
                 view->float_y = view->scene_tree->node.y;
@@ -1632,8 +1815,35 @@ static void cursor_button_notify(struct wl_listener *listener, void *data) {
         }
     }
 
-    wlr_seat_pointer_notify_button(server->seat, event->time_msec,
-        event->button, event->state);
+    wlr_seat_pointer_notify_button(server->seat, time_msec, button, state);
+}
+
+static void cursor_motion_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_server *server = wl_container_of(listener, server, cursor_motion);
+    struct wlr_pointer_motion_event *event = data;
+
+    wlr_cursor_move(server->cursor, NULL, event->delta_x, event->delta_y);
+    stratwm_apply_move_grab(server);
+
+    wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
+        server->cursor->x, server->cursor->y);
+}
+
+static void cursor_motion_absolute_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_server *server = wl_container_of(listener, server, cursor_motion_absolute);
+    struct wlr_pointer_motion_absolute_event *event = data;
+
+    wlr_cursor_warp_absolute(server->cursor, NULL, event->x, event->y);
+    stratwm_apply_move_grab(server);
+    wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
+        server->cursor->x, server->cursor->y);
+}
+
+static void cursor_button_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_server *server = wl_container_of(listener, server, cursor_button);
+    struct wlr_pointer_button_event *event = data;
+
+    stratwm_process_pointer_button(server, event->time_msec, event->button, event->state);
 }
 
 static void cursor_axis_notify(struct wl_listener *listener, void *data) {
@@ -1892,6 +2102,10 @@ int main(void) {
         server.workspaces[i].layout = LAYOUT_BSP;  /* Default to BSP layout (Phase 8.6) */
     }
     server.focused_view = NULL;
+
+    server.deco_titlebar_h = 24;
+    server.deco_border_pad = 2;
+    stratwm_load_deco_config(&server);
 
     /* Guarantee VM boot even if the environment gets scrubbed */
     setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
@@ -2248,6 +2462,7 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
 
                 /* Move the cursor directly (bypasses the cursor_motion_notify handler) */
                 wlr_cursor_move(dev->server->cursor, NULL, accum_dx, accum_dy);
+                stratwm_apply_move_grab(dev->server);
                 wlr_seat_pointer_notify_motion(dev->server->seat, motion.time_msec,
                     dev->server->cursor->x, dev->server->cursor->y);
 
@@ -2317,17 +2532,10 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
                 default: button = ev.code; break;
             }
 
-            struct wlr_pointer_button_event btn = {
-                .pointer = dev->wlr.pointer,
-                .time_msec = ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000,
-                .button = button,
-                .state = ev.value ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED
-            };
-            wl_signal_emit(&dev->wlr.pointer->events.button, &btn);
-
-            /* Notify seat of button event */
-            wlr_seat_pointer_notify_button(dev->server->seat, btn.time_msec,
-                btn.button, btn.state);
+            uint32_t tm = (uint32_t)(ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000);
+            uint32_t st = ev.value ? WL_POINTER_BUTTON_STATE_PRESSED
+                                   : WL_POINTER_BUTTON_STATE_RELEASED;
+            stratwm_process_pointer_button(dev->server, tm, button, st);
         }
     }
 

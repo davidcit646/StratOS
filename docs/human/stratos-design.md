@@ -1,8 +1,12 @@
 # STRAT OS
+
 ### System Design Document v0.4
+
 *"The system is the bedrock. Home is yours. Touch neither uninvited."*
 
 ---
+
+> **Where this file lives:** `docs/human/stratos-design.md`. Full documentation index: [../README.md](../README.md) (human vs agent layout). **Agent digest** (invariants, boot chain, § map, grep): [../agent/stratos-design.md](../agent/stratos-design.md).
 
 ## 1. PHILOSOPHY
 
@@ -88,21 +92,27 @@ Any single layer can be destroyed. The other two survive intact. This is not an 
 ## 2. SYSTEM REQUIREMENTS
 
 ### Minimum
-| Component | Requirement |
-|---|---|
-| RAM | 16GB |
-| Storage | 256GB |
-| CPU | x86_64, 4 cores, 2020 or newer |
-| Boot | UEFI only. No legacy BIOS. Ever. |
-| GPU | Any with modern Linux driver support |
+
+
+| Component | Requirement                          |
+| --------- | ------------------------------------ |
+| RAM       | 16GB                                 |
+| Storage   | 256GB                                |
+| CPU       | x86_64, 4 cores, 2020 or newer       |
+| Boot      | UEFI only. No legacy BIOS. Ever.     |
+| GPU       | Any with modern Linux driver support |
+
 
 ### Recommended
-| Component | Requirement |
-|---|---|
-| RAM | 32GB |
-| Storage | 1TB NVMe |
-| CPU | 8+ cores |
-| GPU | Dedicated, Vulkan capable |
+
+
+| Component | Requirement               |
+| --------- | ------------------------- |
+| RAM       | 32GB                      |
+| Storage   | 1TB NVMe                  |
+| CPU       | 8+ cores                  |
+| GPU       | Dedicated, Vulkan capable |
+
 
 Strat OS is not for old hardware. It is not for low storage machines. It is not for people who want to run everything on a $200 laptop from 2015. There are other distros for that. This is not one of them.
 
@@ -119,6 +129,7 @@ Strat OS is not for old hardware. It is not for low storage machines. It is not 
 - **CRIU** — process checkpoint/restore across kexec transitions
 
 **What goes in:**
+
 ```
 Core:        scheduler, memory manager, VFS, network stack, IPC
 Filesystems: EROFS, Btrfs, XFS, ext4, FAT32, tmpfs, overlayfs
@@ -130,6 +141,7 @@ CRIU:        yes
 ```
 
 **What stays out:**
+
 ```
 Virtualisation subsystems    — not a server
 Legacy bus drivers           — ISA, parallel port, floppy
@@ -138,6 +150,7 @@ Everything not explicitly needed
 ```
 
 **Module strategy:**
+
 ```
 Core subsystems    → compiled in (monolithic, always available)
 Hardware drivers   → modular (loaded by udev on detection, flexible)
@@ -148,6 +161,7 @@ Hardware drivers   → modular (loaded by udev on detection, flexible)
 Every partition has exactly one job. No partition does two jobs. No job is done by two partitions.
 
 #### At 256GB (minimum)
+
 ```
 ESP           512MB   FAT32    Bootloader, EFI variables, slot flags
 SLOT_A         20GB   EROFS    Current system image (read-only, immutable)
@@ -158,6 +172,7 @@ HOME          ~191GB  Btrfs    User data — checksummed, compressed, snapshotte
 ```
 
 #### At 1TB (recommended)
+
 ```
 ESP           512MB   FAT32
 SLOT_A         20GB   EROFS
@@ -184,6 +199,7 @@ Large parallel writes. Build artifacts, compiled dependencies, package cache. XF
 
 **HOME → Btrfs**
 Your data deserves the best filesystem available.
+
 - Per-block checksums — detects silent corruption before it ruins a file
 - Transparent zstd compression — text, code, documents compress 3-5x, effectively more space
 - Copy-on-write — snapshots are nearly free
@@ -191,6 +207,7 @@ Your data deserves the best filesystem available.
 - This is where irreplaceable files live. Btrfs protects them.
 
 **Btrfs checksums catch what ext4 misses:**
+
 ```
 ext4:   bit flips silently → file is corrupt → you find out later
 Btrfs:  bit flips → checksum mismatch at read time → you find out immediately
@@ -284,6 +301,7 @@ GRUB and systemd-boot cannot do this. They hand off to the OS and trust it to ma
 **Estimated size:** ~1,500 lines of C. Clean, auditable, entirely ours.
 
 **Responsibilities:**
+
 - Read/write slot health flags in EFI variables
 - Read/write partition reset flags in EFI variables
 - Execute pending partition operations before any mount
@@ -400,6 +418,7 @@ Accessible from ESC menu. All operations execute before any partition mounts.
 ```
 
 **CONFIRM screen for destructive actions:**
+
 ```
   ⚠  Wipe HOME
 
@@ -436,6 +455,7 @@ Enough to fix something or pull a new image. Not a crippled embarrassment.
 systemd oneshot service. Runs in `sysinit.target` before user services. 30 second window.
 
 **Checks:**
+
 - /system mounted and read-only
 - /config mounted and read-write
 - /home mounted and accessible
@@ -463,6 +483,7 @@ The pin is sacred.
 - Pinned slot is the source for system reflash in recovery
 
 **If all slots pinned:**
+
 ```
 "You've pinned everything.
  Unpin a slot to accept updates."
@@ -487,6 +508,7 @@ All slots pinned                →  notify user, do nothing
 Single statically-linked Rust binary. Zero runtime dependencies. Zero shared libraries. Lives in the ESP — neither system slot can touch it.
 
 **Lifecycle:**
+
 ```
 Normal operation:
     Dormant. Zero RAM. Zero CPU. Does not exist to the user.
@@ -552,6 +574,7 @@ Fail:
 ```
 
 **Clipboard format:**
+
 ```
 [StratOS] Update failed — YYYY-MM-DD HH:MM
 
@@ -644,6 +667,7 @@ Snap                 NOT SUPPORTED
 ```
 
 **The two user models:**
+
 ```
 Squirrel    Opens app store. Clicks install. Flatpak downloads. Done.
             Never thinks about compilers. It just works.
@@ -753,14 +777,16 @@ No wall of permissions on install that nobody reads.
 
 ### 8.9 Supported Formats — Final List
 
-| Format | Support level | Default install path |
-|---|---|---|
-| .strat | Native, first class | strat-build |
-| Flatpak | First class | App store default |
-| AppImage | Supported | Drag, drop, run |
-| Proton/Wine | Supported | For Windows apps/games |
-| Raw binary | Advanced mode | /usr bind mount handles it |
-| Snap | Not supported | User installable manually |
+
+| Format      | Support level       | Default install path       |
+| ----------- | ------------------- | -------------------------- |
+| .strat      | Native, first class | strat-build                |
+| Flatpak     | First class         | App store default          |
+| AppImage    | Supported           | Drag, drop, run            |
+| Proton/Wine | Supported           | For Windows apps/games     |
+| Raw binary  | Advanced mode       | /usr bind mount handles it |
+| Snap        | Not supported       | User installable manually  |
+
 
 ---
 
@@ -775,6 +801,7 @@ Sway is rigid. Its configuration file is its UI. It was never designed for what 
 Wayland native. XWayland available for legacy apps. Not a core dependency.
 
 **IPC socket at `/run/stratvm.sock`:**
+
 ```
 settings app  →  "set panel autohide true"     → instant, no restart
 SPOTLITE      →  "trigger_coverflow"           → instant
@@ -789,6 +816,7 @@ No config file restart cycle. Ever.
 Default: **Tiling**
 
 Per-window override — right-click titlebar:
+
 ```
 [ Float this window    ]
 [ Maximize             ]
@@ -798,6 +826,7 @@ Per-window override — right-click titlebar:
 ```
 
 Global DE toggle in panel:
+
 ```
 [ Tiling ▼ ] → [ Floating ▼ ]
 ```
@@ -811,6 +840,7 @@ Instant. Live. No restart. No config editing required.
 Default: visible titlebar with close, minimize, fullscreen buttons. Buttons exist for new users. Power users remove them via right-click. Keyboard shortcuts replace them.
 
 Right-click titlebar:
+
 ```
 [ Float this window    ]
 [ Remove titlebar      ]
@@ -823,6 +853,7 @@ Right-click titlebar:
 Live. Immediate. Reversible. No restart.
 
 **Decoration settings (in Settings app):**
+
 ```
 Corner radius:   [ slider 0–12px ]
 Border width:    [ slider 0–4px  ]
@@ -910,6 +941,7 @@ Momentum:     Yes — flick and it coasts naturally
 Pinned apps anchor left. Scroll right → recently opened → all installed apps. One continuous strip. No folders. No categories.
 
 Right-click any launcher item:
+
 ```
 [ Pin to launcher ]  or  [ Unpin ]
 [ Open                ]
@@ -927,13 +959,15 @@ Super + `                  → panel toggle
 
 Hover and scroll. No clicking required for quick adjustments.
 
-| Item | Hover shows | Scroll does |
-|---|---|---|
-| 🔊 Volume | Current % | Adjust volume |
-| 📶 Network | Connected network | Cycle saved networks |
-| 🔋 Battery | % + time remaining | — |
-| 🔆 Brightness | Current % | Adjust brightness |
-| 🕐 Clock | Full date + next event | — |
+
+| Item          | Hover shows            | Scroll does          |
+| ------------- | ---------------------- | -------------------- |
+| 🔊 Volume     | Current %              | Adjust volume        |
+| 📶 Network    | Connected network      | Cycle saved networks |
+| 🔋 Battery    | % + time remaining     | —                    |
+| 🔆 Brightness | Current %              | Adjust brightness    |
+| 🕐 Clock      | Full date + next event | —                    |
+
 
 Click any tray item → full detail panel.
 
@@ -1023,18 +1057,20 @@ Always current. Never stale. Tiny RAM footprint at idle.
 
 ### 11.5 Result Types & Actions
 
-| Type | Enter action |
-|---|---|
-| App | Launch |
-| File | Open in default app |
-| Folder | Open in Strat Terminal |
-| Setting | Deep link to exact control |
-| Bookmark | Open in Chromium |
-| Email | Open in mail client |
-| Calendar event | Open in calendar |
-| Command | Execute (confirm if destructive) |
-| Math/conversion | Display answer inline |
-| Live info | Expand inline |
+
+| Type            | Enter action                     |
+| --------------- | -------------------------------- |
+| App             | Launch                           |
+| File            | Open in default app              |
+| Folder          | Open in Strat Terminal           |
+| Setting         | Deep link to exact control       |
+| Bookmark        | Open in Chromium                 |
+| Email           | Open in mail client              |
+| Calendar event  | Open in calendar                 |
+| Command         | Execute (confirm if destructive) |
+| Math/conversion | Display answer inline            |
+| Live info       | Expand inline                    |
+
 
 ### 11.6 Division of Responsibility
 
@@ -1134,12 +1170,14 @@ Working in: /home/Dave/Documents/Projects/
 
 ### 13.3 File Browser
 
-| Target | Single click | Double click |
-|---|---|---|
-| 📁 Folder | Preview inline | Navigate into it |
-| 📄 File | Preview first lines | Open in default app |
-| 📄 Script | Show what it does | Run it |
-| 📄 Config | Plain English summary | Edit it |
+
+| Target    | Single click          | Double click        |
+| --------- | --------------------- | ------------------- |
+| 📁 Folder | Preview inline        | Navigate into it    |
+| 📄 File   | Preview first lines   | Open in default app |
+| 📄 Script | Show what it does     | Run it              |
+| 📄 Config | Plain English summary | Edit it             |
+
 
 ### 13.4 Breadcrumb
 
@@ -1170,6 +1208,7 @@ Keep typing    ghost updates live
 ```
 
 **Ranking:**
+
 1. Most recently visited match (frecency)
 2. Most frequently visited match
 3. Closest string match in current directory
@@ -1177,17 +1216,20 @@ Keep typing    ghost updates live
 5. System paths
 
 **Case insensitive always. Abbreviation matching:**
+
 ```
 cd dl    →  Downloads/      (abbreviation)
 cd DOWN  →  Downloads/      (case insensitive)
 ```
 
 **Full path ghosting:**
+
 ```
 cd ~/doc/pro/str  →  cd ~/Documents/Projects/StratOS/
 ```
 
 **Command ghosting:**
+
 ```
 git     →  git commit -m "    (last git command you ran)
 sudo    →  sudo systemctl restart
@@ -1257,17 +1299,19 @@ bash always accessible   POSIX compatibility for scripts
 
 ## 14. DEFAULT APPLICATION STACK
 
-| Role | Application |
-|---|---|
-| Browser | Ungoogled Chromium |
-| Office | OnlyOffice (Community Edition) |
-| Terminal | Strat Terminal (ours) |
-| Image viewer | Strat Viewer (ours) |
-| Video & Audio | VLC |
-| Print | CUPS + vendor drivers |
-| Text editing | Strat Terminal built-in |
-| Email | Native IMAP client |
-| Calendar | Native CalDAV client |
+
+| Role          | Application                    |
+| ------------- | ------------------------------ |
+| Browser       | Ungoogled Chromium             |
+| Office        | OnlyOffice (Community Edition) |
+| Terminal      | Strat Terminal (ours)          |
+| Image viewer  | Strat Viewer (ours)            |
+| Video & Audio | VLC                            |
+| Print         | CUPS + vendor drivers          |
+| Text editing  | Strat Terminal built-in        |
+| Email         | Native IMAP client             |
+| Calendar      | Native CalDAV client           |
+
 
 ### 14.1 Strat Viewer
 
@@ -1391,6 +1435,7 @@ Type 'exit' to return to recovery menu.
 ```
 
 **The one guardrail:**
+
 ```
 # mkfs.ext4 /dev/sda5
 
@@ -1624,13 +1669,15 @@ Every reset operation — from CONFIG wipe to full factory reset — executes in
 
 ## APPENDIX C — Filesystem Summary
 
-| Partition | Filesystem | Why |
-|---|---|---|
-| ESP | FAT32 | UEFI spec requires it |
-| SLOT_A/B/C | EROFS | Immutable by design, compressed, Android-proven |
-| CONFIG | ext4 | Stable, boring, perfect for tiny config partition |
-| STRAT_CACHE | XFS | Parallel build writes, large files, built for this |
-| HOME | Btrfs | Checksums, compression, snapshots, your data deserves it |
+
+| Partition   | Filesystem | Why                                                      |
+| ----------- | ---------- | -------------------------------------------------------- |
+| ESP         | FAT32      | UEFI spec requires it                                    |
+| SLOT_A/B/C  | EROFS      | Immutable by design, compressed, Android-proven          |
+| CONFIG      | ext4       | Stable, boring, perfect for tiny config partition        |
+| STRAT_CACHE | XFS        | Parallel build writes, large files, built for this       |
+| HOME        | Btrfs      | Checksums, compression, snapshots, your data deserves it |
+
 
 ---
 

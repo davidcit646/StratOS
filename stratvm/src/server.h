@@ -97,6 +97,10 @@ struct stratwm_server {
     struct stratwm_ipc ipc;
     bool panel_autohide;
 
+    /* Optional `/config/strat/stratvm.conf` — titlebar / border padding (see stratwm_load_deco_config). */
+    int deco_titlebar_h;
+    int deco_border_pad;
+
     struct wlr_output_layout *output_layout;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;

@@ -25,7 +25,7 @@ impl Clock {
             .unwrap()
             .as_secs();
 
-        let (hour, minute, second, year, month, day, weekday) = self.compute_time(secs);
+        let (hour, minute, _second, year, month, day, weekday) = self.compute_time(secs);
 
         let time_str = if format == "12hr" {
             let hour_12 = if hour % 12 == 0 { 12 } else { hour % 12 };

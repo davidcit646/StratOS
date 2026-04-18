@@ -87,19 +87,20 @@ static void read_cmdline_param(const char *param, char *out, size_t out_len, con
 }
 
 static void read_root_device(char *out, size_t out_len) {
-    read_cmdline_param("root=", out, out_len, "/dev/sda2");
+    /* Default /dev/vda2 matches QEMU virtio disks; /dev/sda* is used as fallback below. */
+    read_cmdline_param("root=", out, out_len, "/dev/vda2");
 }
 
 static void read_config_device(char *out, size_t out_len) {
-    read_cmdline_param("config=", out, out_len, "/dev/sda5");
+    read_cmdline_param("config=", out, out_len, "/dev/vda5");
 }
 
 static void read_apps_device(char *out, size_t out_len) {
-    read_cmdline_param("apps=", out, out_len, "/dev/sda6");
+    read_cmdline_param("apps=", out, out_len, "/dev/vda6");
 }
 
 static void read_home_device(char *out, size_t out_len) {
-    read_cmdline_param("home=", out, out_len, "/dev/sda7");
+    read_cmdline_param("home=", out, out_len, "/dev/vda7");
 }
 
 static void log_status(const char *msg) {
@@ -196,6 +197,31 @@ static int resolve_partuuid_device(const char *partuuid_spec, char *out, size_t 
     return found ? 0 : -1;
 }
 
+static void resolve_or_fallback_data_dev(
+    const char *raw,
+    const char *fallback_vda,
+    const char *fallback_sda,
+    char *out,
+    size_t out_len,
+    const char *what
+) {
+    if (resolve_partuuid_device(raw, out, out_len) == 0) {
+        return;
+    }
+    if (access(fallback_vda, F_OK) == 0) {
+        snprintf(out, out_len, "%s", fallback_vda);
+        fprintf(stderr, "init: %s: using fallback %s\n", what, fallback_vda);
+        return;
+    }
+    if (access(fallback_sda, F_OK) == 0) {
+        snprintf(out, out_len, "%s", fallback_sda);
+        fprintf(stderr, "init: %s: using fallback %s\n", what, fallback_sda);
+        return;
+    }
+    fprintf(stderr, "init: could not resolve %s (%s)\n", what, raw);
+    wait_forever();
+}
+
 int main(void) {
     log_status("start");
     ensure_dir("/proc");
@@ -222,20 +248,30 @@ int main(void) {
     char root_dev_resolved[128];
     read_root_device(root_dev, sizeof(root_dev));
     if (resolve_partuuid_device(root_dev, root_dev_resolved, sizeof(root_dev_resolved)) != 0) {
-        if (strncmp(root_dev, "PARTUUID=", 9) == 0 && access("/dev/sda2", F_OK) == 0) {
-            snprintf(root_dev_resolved, sizeof(root_dev_resolved), "/dev/sda2");
+        if (strncmp(root_dev, "PARTUUID=", 9) == 0) {
+            if (access("/dev/vda2", F_OK) == 0) {
+                snprintf(root_dev_resolved, sizeof(root_dev_resolved), "/dev/vda2");
+            } else if (access("/dev/sda2", F_OK) == 0) {
+                snprintf(root_dev_resolved, sizeof(root_dev_resolved), "/dev/sda2");
+            } else {
+                fprintf(stderr, "init: resolve root device failed: %s\n", root_dev);
+                wait_forever();
+            }
             fprintf(stderr, "init: PARTUUID unresolved, falling back to %s\n", root_dev_resolved);
         } else {
-            fprintf(stderr, "init: resolve root device failed: %s\n", root_dev);
-            wait_forever();
+            snprintf(root_dev_resolved, sizeof(root_dev_resolved), "%s", root_dev);
         }
     }
     mount_or_die(root_dev_resolved, "/system", "erofs", MS_RDONLY, NULL, "mount /system");
     log_status("mounted /system");
 
     char config_dev[128];
+    char config_resolved[128];
     read_config_device(config_dev, sizeof(config_dev));
-    mount_or_die(config_dev, "/config", "ext4", 0, NULL, "mount /config");
+    resolve_or_fallback_data_dev(
+        config_dev, "/dev/vda5", "/dev/sda5", config_resolved, sizeof(config_resolved), "config"
+    );
+    mount_or_die(config_resolved, "/config", "ext4", 0, NULL, "mount /config");
     log_status("mounted /config");
 
     /* Ensure /config/etc exists — ext4 is empty on first boot */
@@ -246,13 +282,21 @@ int main(void) {
     log_status("bind-mounted /etc");
 
     char apps_dev[128];
+    char apps_resolved[128];
     read_apps_device(apps_dev, sizeof(apps_dev));
-    mount_or_die(apps_dev, "/apps", "ext4", 0, NULL, "mount /apps");
+    resolve_or_fallback_data_dev(
+        apps_dev, "/dev/vda6", "/dev/sda6", apps_resolved, sizeof(apps_resolved), "apps"
+    );
+    mount_or_die(apps_resolved, "/apps", "ext4", 0, NULL, "mount /apps");
     log_status("mounted /apps");
 
     char home_dev[128];
+    char home_resolved[128];
     read_home_device(home_dev, sizeof(home_dev));
-    mount_or_die(home_dev, "/home", "btrfs", 0, NULL, "mount /home");
+    resolve_or_fallback_data_dev(
+        home_dev, "/dev/vda7", "/dev/sda7", home_resolved, sizeof(home_resolved), "home"
+    );
+    mount_or_die(home_resolved, "/home", "btrfs", 0, NULL, "mount /home");
     log_status("mounted /home");
 
     /* Ensure /config/var exists — ext4 is empty on first boot */

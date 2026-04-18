@@ -105,6 +105,13 @@ pub enum Event {
         button: u32,
         state: u32,
     },
+    /// wl_pointer.axis(time, axis, value) — scroll / discrete axis
+    PointerAxis {
+        axis: u32,
+        value: f64,
+    },
+    /// wl_pointer.leave(serial, surface)
+    PointerLeave,
     /// wl_buffer.release — compositor done with buffer, client can reuse
     BufferRelease {
         buffer_id: u32,
@@ -130,8 +137,10 @@ impl Event {
             (Interface::WlKeyboard, 3) => "uuuu", // key
             (Interface::WlKeyboard, 4) => "uuuuu",// modifiers
             (Interface::WlPointer, 0) => "uoff", // enter: serial, surface, surface_x, surface_y
+            (Interface::WlPointer, 1) => "uo", // leave: serial, surface
             (Interface::WlPointer, 2) => "uff", // motion: time, surface_x, surface_y
             (Interface::WlPointer, 3) => "uuuu", // button: serial, time, button, state
+            (Interface::WlPointer, 4) => "uuf", // axis: time, axis, value
             (Interface::XdgWmBase, 0) => "u",     // ping
             (Interface::XdgSurface, 0) => "u",    // configure
             (Interface::XdgToplevel, 0) => "iia", // configure
@@ -264,6 +273,18 @@ impl Event {
                     })
                 } else { None }
             }
+            (Interface::WlPointer, 1) => {
+                if args.len() < 2 {
+                    return None;
+                }
+                if let (Argument::Uint(_serial), Argument::Object(_surface)) =
+                    (&args[0], &args[1])
+                {
+                    Some(Event::PointerLeave)
+                } else {
+                    None
+                }
+            }
             (Interface::WlPointer, 0) => {
                 if args.len() < 4 { return None; }
                 if let (_, _, Argument::Fixed(fx), Argument::Fixed(fy)) =
@@ -281,6 +302,17 @@ impl Event {
                     (&args[0], &args[1], &args[2], &args[3])
                 {
                     Some(Event::PointerButton { button: *button, state: *state })
+                } else { None }
+            }
+            (Interface::WlPointer, 4) => {
+                if args.len() < 3 { return None; }
+                if let (_, Argument::Uint(axis), Argument::Fixed(v)) =
+                    (&args[0], &args[1], &args[2])
+                {
+                    Some(Event::PointerAxis {
+                        axis: *axis,
+                        value: (*v as f64) / 256.0,
+                    })
                 } else { None }
             }
             _ => None,

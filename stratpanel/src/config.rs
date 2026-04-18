@@ -22,6 +22,7 @@ pub struct ClockSection {
     pub show_date: bool,
 }
 
+/// Absolute paths to executables, e.g. `apps = ["/bin/stratterm", "/bin/sh"]`
 pub struct PinnedSection {
     pub apps: Vec<String>,
 }

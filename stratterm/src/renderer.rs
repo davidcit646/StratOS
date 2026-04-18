@@ -262,19 +262,53 @@ impl Renderer {
         y += (FONT_HEIGHT as u32) + 4;
 
         for line in ui.browser_lines.iter().take(16) {
+            let selected = line.starts_with('>');
+            if selected {
+                // Selected-row highlight bar (keeps UI overlay-only; terminal buffer untouched).
+                draw_rect(
+                    buffer,
+                    buffer_width,
+                    panel_x,
+                    y.saturating_sub(1),
+                    panel_width,
+                    (FONT_HEIGHT as u32) + 2,
+                    (34, 48, 78),
+                );
+            }
             draw_text(
                 buffer,
                 buffer_width,
                 panel_x + 8,
                 y,
                 line,
-                (235, 235, 235),
-                (18, 20, 28),
+                if selected { (255, 255, 255) } else { (235, 235, 235) },
+                if selected { (34, 48, 78) } else { (18, 20, 28) },
             );
             y += FONT_HEIGHT as u32;
         }
 
+        let split_top = y;
         y += 4;
+        // Rule + distinct preview pane (list stays on base panel tone).
+        draw_rect(
+            buffer,
+            buffer_width,
+            panel_x,
+            split_top,
+            panel_width,
+            2,
+            (56, 62, 80),
+        );
+        let preview_bg = (26, 28, 38);
+        draw_rect(
+            buffer,
+            buffer_width,
+            panel_x,
+            y,
+            panel_width,
+            buffer_height.saturating_sub(y),
+            preview_bg,
+        );
         draw_text(
             buffer,
             buffer_width,
@@ -282,7 +316,7 @@ impl Renderer {
             y,
             &ui.preview_title,
             (255, 205, 145),
-            (18, 20, 28),
+            preview_bg,
         );
         y += (FONT_HEIGHT as u32) + 2;
         for line in ui.preview_lines.iter().take(12) {
@@ -293,7 +327,7 @@ impl Renderer {
                 y,
                 line,
                 (210, 210, 210),
-                (18, 20, 28),
+                preview_bg,
             );
             y += FONT_HEIGHT as u32;
         }

@@ -119,8 +119,8 @@ This pattern follows the **Runtime Persistence Contract** (`runtime-persistence-
 
 ## References
 
-- `docs/runtime-persistence-contract.md` — Path ownership and persistence rules
-- `docs/application-config-resolution.md` — App config lookup patterns
+- [runtime-persistence-contract.md](runtime-persistence-contract.md) — Path ownership and persistence rules
+- [application-config-resolution.md](application-config-resolution.md) — App config lookup patterns
 - `sysroot/initramfs-init.c` — Boot-time mount operations
 - `stratman/src/main.rs` — Service manager initialization
 
