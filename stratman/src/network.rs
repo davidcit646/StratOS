@@ -331,7 +331,8 @@ fn get_mac_address(iface: &str) -> Result<[u8; 6], String> {
     
     let mut mac = [0u8; 6];
     unsafe {
-        mac.copy_from_slice(&ifr.ifr_ifru.ifru_hwaddr.sa_data[..6]);
+        let sa_data = &ifr.ifr_ifru.ifru_hwaddr.sa_data[..6];
+        mac.copy_from_slice(&*(sa_data as *const [i8] as *const [u8]));
     }
     Ok(mac)
 }
