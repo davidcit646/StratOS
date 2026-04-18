@@ -128,7 +128,7 @@ fn draw_text(buf: &mut [u8], stride: u32, panel_width: i32, panel_height: i32,
                 let row = rows[row_idx];
                 for col_idx in 0..5 {
                     if (row >> (4 - col_idx)) & 1 == 1 {
-                        let px = cursor_x + col_idx;
+                        let px = cursor_x + col_idx as i32;
                         let py = y + row_idx as i32;
                         if px >= 0 && px < panel_width && py >= 0 && py < panel_height {
                             let offset = (py as u32 * stride + px as u32 * 4) as usize;
@@ -339,6 +339,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Track last rendered state to avoid unnecessary commits
     let mut last_clock_text = String::new();
     let mut needs_commit = true; // Initial render
+    let mut last_configure_serial: u32 = 0;
 
     // Step 9: Main event loop
     loop {
@@ -432,8 +433,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for event in client.poll()? {
             match event {
                 Event::LayerSurfaceConfigure { serial, .. } => {
-                    ls.ack_configure(serial, client.socket());
-                    WlSurface::new(surface_id).commit(client.socket());
+                    if serial != last_configure_serial {
+                        last_configure_serial = serial;
+                        ls.ack_configure(serial, client.socket());
+                    }
                 }
                 Event::LayerSurfaceClosed { .. } => return Ok(()),
                 Event::PointerMotion { surface_x, surface_y } => {

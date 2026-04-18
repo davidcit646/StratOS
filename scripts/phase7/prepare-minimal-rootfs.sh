@@ -419,9 +419,8 @@ fi
 if [ -x "$ROOTFS_DIR/bin/strat-settings" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/strat-settings" >> "$ROOTFS_DIR/.runtime.queue"
 fi
-if [ -x "$ROOTFS_DIR/bin/stratpanel" ]; then
-    printf '%s\n' "$ROOTFS_DIR/bin/stratpanel" >> "$ROOTFS_DIR/.runtime.queue"
-fi
+# NOTE: stratpanel is started by stratvm via spawn_autostart, not here
+# This prevents double-panel issue
 if [ -x "$ROOTFS_DIR/bin/sh" ]; then
     printf '%s\n' "$ROOTFS_DIR/bin/sh" >> "$ROOTFS_DIR/.runtime.queue"
 fi

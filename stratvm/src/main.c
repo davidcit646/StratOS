@@ -731,8 +731,8 @@ static void layer_surface_configure(struct stratwm_layer_surface *layer) {
 }
 
 static void layer_surface_commit_notify(struct wl_listener *listener, void *data) {
-    (void)data;
-    struct stratwm_layer_surface *layer = wl_container_of(listener, layer, commit);
+    (void)listener;
+    struct stratwm_layer_surface *layer = data;
     layer_surface_configure(layer);
 }
 
@@ -818,6 +818,7 @@ static void server_new_layer_surface_notify(struct wl_listener *listener, void *
 static void output_frame_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_output *output = wl_container_of(listener, output, frame);
+    (void)output->server;  /* Unused but kept for future reference */
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -1833,6 +1834,12 @@ int main(void) {
         fprintf(stderr, "stratwm: set default cursor\n");
     }
 
+    /* Create basic cursor rect (white 12x18 rectangle) as fallback */
+    float cursor_color[4] = {1.0, 1.0, 1.0, 1.0};  /* White */
+    server.cursor_rect = wlr_scene_rect_create(&server.scene->tree, 12, 18, cursor_color);
+    wlr_scene_node_set_enabled(&server.cursor_rect->node, true);
+    fprintf(stderr, "stratwm: created cursor rect\n");
+
     server.cursor_motion.notify = cursor_motion_notify;
     wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
     server.cursor_motion_absolute.notify = cursor_motion_absolute_notify;
@@ -1967,10 +1974,12 @@ static struct stratwm_evdev_device *evdev_device_create(
     strncpy(dev->path, path, sizeof(dev->path) - 1);
     dev->fd = -1;
 
-    /* Open with wlr_session to handle permissions via seatd */
-    /* Note: wlr_session_open_file requires a wlr_session, which we get from backend */
-    /* For now, open directly - seatd should have set permissions */
-    dev->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    /* Open read-write - some devices require this for grab/ioctl */
+    dev->fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (dev->fd < 0) {
+        /* Fallback to read-only */
+        dev->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    }
     if (dev->fd < 0) {
         free(dev);
         return NULL;
@@ -1987,9 +1996,6 @@ static struct stratwm_evdev_device *evdev_device_create(
     bool has_keys = libevdev_has_event_type(dev->evdev, EV_KEY);
     bool has_rel = libevdev_has_event_type(dev->evdev, EV_REL);
     bool has_abs = libevdev_has_event_type(dev->evdev, EV_ABS);
-
-    fprintf(stderr, "stratwm: %s caps: keys=%d rel=%d abs=%d\n",
-            path, has_keys, has_rel, has_abs);
 
     dev->is_keyboard = has_keys && !has_rel && !has_abs;
     dev->is_pointer = has_rel || (has_abs && !has_keys);
@@ -2031,7 +2037,6 @@ static struct stratwm_evdev_device *evdev_device_create(
         wlr_seat_set_capabilities(server->seat,
             WL_SEAT_CAPABILITY_POINTER |
             (wl_list_empty(&server->keyboards) ? 0 : WL_SEAT_CAPABILITY_KEYBOARD));
-        wlr_seat_pointer_notify_enter(server->seat, NULL, 0, 0);
 
         /* Emit new_input signal */
         wl_signal_emit(&server->backend->events.new_input, &ptr->base);
@@ -2043,11 +2048,8 @@ static struct stratwm_evdev_device *evdev_device_create(
         dev->fd, WL_EVENT_READABLE, evdev_device_event, dev);
 
     if (!dev->event_source) {
-        fprintf(stderr, "stratwm: failed to add %s to event loop\n", path);
         goto fail;
     }
-
-    fprintf(stderr, "stratwm: added %s to event loop (fd=%d)\n", path, dev->fd);
 
     wl_list_insert(&g_input_manager.devices, &dev->link);
     goto success;
@@ -2059,9 +2061,10 @@ fail:
     return NULL;
 
 success:
+#ifdef DEBUG
     fprintf(stderr, "stratwm: evdev opened %s (kbd=%d, ptr=%d)\n",
             path, dev->is_keyboard, dev->is_pointer);
-
+#endif
     return dev;
 }
 
@@ -2095,16 +2098,11 @@ static void evdev_device_destroy(struct stratwm_evdev_device *dev) {
 }
 
 static int evdev_device_event(int fd, uint32_t mask, void *data) {
+    (void)fd;
     (void)mask;
     struct stratwm_evdev_device *dev = data;
     struct input_event ev;
     static double accum_dx = 0, accum_dy = 0;
-    static int event_count = 0;
-
-    event_count++;
-    if (event_count <= 5) {
-        fprintf(stderr, "stratwm: evdev event on %s (ptr=%d)\n", dev->path, dev->is_pointer);
-    }
 
     while (libevdev_next_event(dev->evdev, LIBEVDEV_READ_FLAG_NORMAL, &ev) == LIBEVDEV_READ_STATUS_SUCCESS) {
         if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
@@ -2125,8 +2123,11 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
                 wlr_seat_pointer_notify_motion(dev->server->seat, motion.time_msec,
                     dev->server->cursor->x, dev->server->cursor->y);
 
-                fprintf(stderr, "stratwm: cursor moved to %.0f,%.0f\n",
-                        dev->server->cursor->x, dev->server->cursor->y);
+                /* Update cursor rect position */
+                if (dev->server->cursor_rect) {
+                    wlr_scene_node_set_position(&dev->server->cursor_rect->node,
+                        (int)dev->server->cursor->x, (int)dev->server->cursor->y);
+                }
 
                 accum_dx = 0;
                 accum_dy = 0;
@@ -2171,11 +2172,6 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
         }
         /* Handle pointer motion (accumulate for SYN_REPORT) */
         else if (dev->is_pointer && ev.type == EV_REL) {
-            static int rel_count = 0;
-            rel_count++;
-            if (rel_count <= 20) {
-                fprintf(stderr, "stratwm: REL event code=%d value=%d\n", ev.code, ev.value);
-            }
             if (ev.code == REL_X) {
                 accum_dx += ev.value;
             } else if (ev.code == REL_Y) {
@@ -2309,7 +2305,8 @@ static void input_manager_probe_devices(struct stratwm_server *server) {
         if (strncmp(entry->d_name, "event", 5) != 0) continue;
 
         char path[256];
-        snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+        int n = snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
 
         /* Check if already known */
         struct stratwm_evdev_device *dev;

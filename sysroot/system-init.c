@@ -263,7 +263,6 @@ int main(void) {
     setenv("HOME", "/home", 1);
     setenv("XDG_RUNTIME_DIR", "/run", 1);
     setenv("XDG_CACHE_HOME", "/var/cache", 1);
-    setenv("WAYLAND_DEBUG", "1", 1);
     unsetenv("LIBSEAT_BACKEND");
     unsetenv("SEATD_SOCK");
     setenv("WLR_RENDERER_ALLOW_SOFTWARE", "1", 1);

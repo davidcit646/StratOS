@@ -99,6 +99,7 @@ struct stratwm_server {
     struct wlr_output_layout *output_layout;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
+    struct wlr_scene_rect *cursor_rect;  /* Basic cursor: white 12x18 rect */
 
     struct wl_list keyboards;
 
