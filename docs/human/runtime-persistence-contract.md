@@ -66,7 +66,7 @@ Source Path → Target Path mappings performed at initramfs time:
 
 ## Three Layer Guarantee Mapping
 
-This contract enforces the Three Layer Guarantee defined in StratOS-Design.md:
+This contract enforces the Three Layer Guarantee defined in [stratos-design.md](stratos-design.md):
 
 1. **SYSTEM layer** (`/system`) — Read-only, immutable. Lose it: system reinstalls from pinned slot.
 2. **CONFIG layer** (`/config`) — User settings and configuration. Lose it: system boots to defaults, all data intact.
@@ -74,7 +74,7 @@ This contract enforces the Three Layer Guarantee defined in StratOS-Design.md:
 
 ## References
 
-- **Source of truth:** StratOS-Design.md section 3.4 "Honest Filesystem Structure"
+- **Source of truth:** [stratos-design.md](stratos-design.md) section 3.4 "Honest Filesystem Structure"
 - **Implementation reference:** sysroot/initramfs-init.c (mount operations at lines 129-175)
 
 ## Implementation Requirements

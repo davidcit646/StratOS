@@ -1,66 +1,15 @@
-# StratOS Discussion Log
+# StratOS discussion log
 
-Consolidated notes from TALKING.md, TALKING-2.md, and TALKING-3.md. This is a living log of ideas and discussions. Formal architecture lives in StratOS-Design-Doc-v0.4.md.
+Append-only **engineering log** (Auditor / Builder / Engineer one-liners). Older brainstorming that lived in merged `TALKING*.md` files has been **removed**; it contradicted the current tree (for example rpm-ostree / overlay language) and is not authoritative.
 
----
-
-## I. Core Philosophy and Goals
-
-### Custom-First Principles
-* **The Power User Focus:** StratOS is built on the belief that "Customization is not a feature; it is the foundation."
-* **Immutable but Plastic:** While the core OS remains immutable for stability and security, the user layer must be infinitely flexible. 
-* **The "Vibe Coding" Workflow:** Integration of AI-assisted development tools (like Windsurf and Cursor) should be a first-class citizen in the OS experience.
-* **Infrastructure as Code:** The OS state should be reproducible and declarable, primarily through the BlueBuild and Universal Blue ecosystem.
-
-### System Metaphors
-* **StratMon is the Conductor:** It coordinates the state of the system, ensures services are in the correct phase, and manages the lifecycle of applications.
-* **StratBoot is the Surgeon:** It handles the precision work of the boot process, ensuring only the necessary layers are stitched together at the right time.
+**Canonical specs:** [stratos-design.md](stratos-design.md), [coding-checklist.md](coding-checklist.md); documentation tree [../README.md](../README.md); clone / build / QEMU [../../README.md](../../README.md).
 
 ---
 
-## II. Update and Versioning Architecture
+## Log
 
-### The StratOS Lifecycle
-* **Atomic Updates:** Leveraging `rpm-ostree` for guaranteed rollbacks.
-* **The Update Flow:**
-    1.  **Staging:** Updates are downloaded in the background to a dormant deployment.
-    2.  **Verification:** Integrity checks ensure the staged image matches the remote manifest.
-    3.  **The "Handshake":** On reboot, StratBoot verifies the integrity of the new deployment before switching.
-* **Version Pinning:** Users should be able to pin specific builds to prevent breaking changes during critical work cycles.
-
----
-
-## III. Filesystem and Storage Philosophy
-
-### Layering Strategy
-* **The Base Image (ReadOnly):** Contains the kernel, system libraries, and core StratOS utilities.
-* **The Work Layer:** Utilizing `overlays` or `reflink` based copying to allow for "disposable" testing environments.
-* **Home Directory Management:** Intentional separation of user data and system configuration. Exploration of using Btrfs subvolumes to snapshot `/home` independently of the system.
-
-### Security and Permissions
-* **Flatpak-Centric:** All GUI applications should ideally be sandboxed via Flatpak.
-* **Service Isolation:** System services managed by StratMon should run with the least privilege possible.
-
----
-
-## IV. Technical Implementation Ideas
-
-### StratMon (The System Monitor/Conductor)
-* **Goal:** A lightweight daemon to monitor system health and resource allocation.
-* **Features:**
-    * Monitor temperature and power profiles.
-    * Interface with the update daemon to notify users of pending reboots.
-    * Provide a "Developer Mode" toggle that relaxes certain immutability constraints for active coding sessions.
-
-### Bootloader and Initialization
-* **StratBoot Ideas:** * Integration with systemd-boot for simplicity and speed.
-
----
-
-## V. Auditor Reviews
-
-2026-04-16 | Auditor | StratOS-Coding-Checklist.md & StratOS-Design.md | All | Reviewed implementation order; identified Phase 1 as critical path; found Phase 2 GDT/IDT error (UEFI-only system) and Phase 6/7 dependency gap; assigned Phase 1 toolchain task to Builder
-2026-04-16 | Auditor | StratOS-Coding-Checklist.md & StratOS-Design.md | All | Accepted Auditor review as current execution baseline: Phase 1 is the critical path, Phase 2 GDT/IDT requires UEFI-only correction, and Phase 6/7 dependency ordering must be made explicit
+2026-04-16 | Auditor | docs/human/coding-checklist.md & docs/human/stratos-design.md | All | Reviewed implementation order; identified Phase 1 as critical path; found Phase 2 GDT/IDT error (UEFI-only system) and Phase 6/7 dependency gap; assigned Phase 1 toolchain task to Builder
+2026-04-16 | Auditor | docs/human/coding-checklist.md & docs/human/stratos-design.md | All | Accepted Auditor review as current execution baseline: Phase 1 is the critical path, Phase 2 GDT/IDT requires UEFI-only correction, and Phase 6/7 dependency ordering must be made explicit
 2026-04-16 | Builder | scripts/phase1/build-erofs-image.sh, .cargo/config.toml | 1-62, 1-11 | Implemented Phase 1 toolchain: custom EROFS build script and Rust toolchain config for x86_64-unknown-linux-musl target with static linking
 2026-04-16 | Auditor | scripts/phase1/build-erofs-image.sh, .cargo/config.toml | All | REJECTED Phase 1 implementation: wrong phase directory (phase1 vs phase0), wrong script purpose (EROFS builder vs GPT disk layout), wrong Rust target (linux-musl vs uefi), missing Makefile and toolchain scripts, violates Custom First with erofs-utils dependency
 2026-04-16 | Builder | scripts/phase0/build-erofs-custom.sh, scripts/phase0/rust-uefi-target.json, scripts/phase0/verify-rust-uefi.sh, .cargo/config.toml, Makefile | All | Corrected Phase 1 implementation: custom EROFS builder in phase0 using tar intermediate (no erofs-utils), UEFI Rust target config, Makefile with phase1-all/disk-layout/toolchain/erofs targets
@@ -68,9 +17,9 @@ Consolidated notes from TALKING.md, TALKING-2.md, and TALKING-3.md. This is a li
 2026-04-16 | Builder | scripts/phase0/create-qemu-disk-image.sh, scripts/phase0/install-toolchain.sh, scripts/phase0/install-gnu-efi.sh, Makefile | All | Corrected Phase 1 implementation (2nd): simplified install-toolchain.sh to Rust UEFI target only, updated create-qemu-disk-image.sh to 6-partition GPT layout (ESP/SLOT_A/B/C/CONFIG/HOME), Makefile with toolchain/disk-image/clean targets
 2026-04-16 | Auditor | scripts/phase0/create-qemu-disk-image.sh, scripts/phase0/install-toolchain.sh, scripts/phase0/install-gnu-efi.sh, Makefile | All | ACCEPTED Phase 1 implementation: correct GPT partition layout with sgdisk, Rust UEFI target installation, GNU-EFI library installation, functional Makefile with toolchain/disk-image/clean targets
 2026-04-16 | Builder | scripts/phase0/create-qemu-disk-image.sh, scripts/phase0/install-toolchain.sh, scripts/phase0/install-gnu-efi.sh, Makefile | All | Corrected Phase 1 implementation (2nd): simplified install-toolchain.sh to Rust UEFI target only, updated create-qemu-disk-image.sh to 6-partition GPT layout (ESP/SLOT_A/B/C/CONFIG/HOME), Makefile with toolchain/disk-image/clean targets
-2026-04-16 | Auditor | StratOS-Coding-Checklist.md | All | Accepted Phase 2 checklist correction (GDT/IDT → EFI variable read/write); assigned validation task for existing UEFI entry point and EFI variable implementation against design doc section 4.2 schema
+2026-04-16 | Auditor | docs/human/coding-checklist.md | All | Accepted Phase 2 checklist correction (GDT/IDT → EFI variable read/write); assigned validation task for existing UEFI entry point and EFI variable implementation against design doc section 4.2 schema
 2026-04-16 | Auditor | stratboot/src/stratboot.c, stratboot/efi/strat_efi_vars.c/h | Lines 762-916, 1-61, 1-43 | ACCEPTED Phase 2 UEFI entry point validation: efi_main correctly initializes EFI_SYSTEM_TABLE, EFI var implementation matches design doc section 4.2 schema (all 9 vars defined), Custom First (pure GNU-EFI), no legacy x86/GDT/IDT, proper EFI_STATUS handling, minimal and auditable
-2026-04-16 | Builder | StratOS-Coding-Checklist.md | Line 11 | Corrected Phase 2 checklist: replaced GDT/IDT setup with UEFI-appropriate EFI variable read/write task
+2026-04-16 | Builder | docs/human/coding-checklist.md | Line 11 | Corrected Phase 2 checklist: replaced GDT/IDT setup with UEFI-appropriate EFI variable read/write task
 2026-04-16 | Builder | stratboot/src/stratboot.c, stratboot/efi/strat_efi_vars.c/h | Lines 762-916, 1-61, 1-43 | Validated UEFI entry point compliance: efi_main correctly initializes EFI_SYSTEM_TABLE, EFI var implementation matches design doc section 4.2 schema (all 9 vars defined), Custom First (pure GNU-EFI), no legacy x86/GDT/IDT, proper EFI_STATUS handling, minimal and auditable
 2026-04-16 | Builder | stratboot/src/stratboot.c, stratboot/src/slot.c | Lines 666-726, 648-664, 1-100 | Validated kernel handoff: start_kernel_efi uses EFI_LOADED_IMAGE_PROTOCOL and BootServices->LoadImage/StartImage (correct EFI protocols), command line includes root device and initrd, slot path functions return correct EFI paths; ISSUE: slot_root_device hardcodes /dev/sda2/3/4 which assumes SATA disk, will fail on NVMe (/dev/nvme0n1p2/3/4) or other disk types
 2026-04-16 | Auditor | stratboot/src/stratboot.c, stratboot/src/partition.c | Lines 648-655 | Assigned root device hardcoding fix: replace /dev/sdX with PARTUUID-based hardware-agnostic identification using EFI protocols to read partition GUIDs from GPT table
@@ -81,14 +30,14 @@ Consolidated notes from TALKING.md, TALKING-2.md, and TALKING-3.md. This is a li
 2026-04-16 | Auditor | Phase 5 task selection | Skeleton creation is foundational prerequisite for all subsequent Phase 5 work
 2026-04-16 | Auditor | scripts/phase5/create-system-skeleton.sh | All | ACCEPTED Phase 5 skeleton script: correct directory structure per design doc section 3.4, input validation with clear errors, idempotent via mkdir -p, 0755 permissions, no symlinks/mounts/overlayfs, minimal (39 lines), basic shell utilities only; verify script is executable before next task
 2026-04-16 | Auditor | Phase 5 runtime contract | Documented authoritative persistence mapping to resolve checklist naming mismatch before implementation
-2026-04-16 | Auditor | docs/runtime-persistence-contract.md | All | ACCEPTED runtime contract: correct checklist naming resolution (/cache→/apps, /user→/home), complete path ownership table, direct/bind mount lists, path categorization, Three Layer Guarantee mapping, references design doc section 3.4 and initramfs-init.c lines 129-175, enforces honest filesystem model; NOTE: STRAT_CACHE documented as ext4 per current initramfs implementation (design doc specifies XFS as target — future cleanup item)
+2026-04-16 | Auditor | docs/human/runtime-persistence-contract.md | All | ACCEPTED runtime contract: correct checklist naming resolution (/cache→/apps, /user→/home), complete path ownership table, direct/bind mount lists, path categorization, Three Layer Guarantee mapping, references design doc section 3.4 and initramfs-init.c lines 129-175, enforces honest filesystem model; NOTE: STRAT_CACHE documented as ext4 per current initramfs implementation (design doc specifies XFS as target — future cleanup item)
 2026-04-16 | Auditor | sysroot/initramfs-init.c | Lines 157-162 | ACCEPTED existing /config/var → /var bind mount: mkdir with EEXIST handling, MS_BIND flag, correct timing (post /config mount, pre MS_MOVE), aligns with runtime contract and design doc section 3.6; no modifications needed
 2026-04-16 | Auditor | sysroot/initramfs-init.c | Lines 164-168 | REJECTED /config/system/etc → /system/etc bind mount: violates honest filesystem model (no union mounts), violates config priority stack (app-level fallback not filesystem overlay), breaks /system EROFS immutability, not in runtime persistence contract; remove lines 164-168, config override must be application-level logic per design doc section 3.5
 2026-04-16 | Auditor | sysroot/initramfs-init.c | All | ACCEPTED bind mount removal: lines 164-168 correctly removed, /system/etc remains immutable (EROFS), /config/var→/var and /system→/usr bind mounts unchanged, aligns with runtime persistence contract and honest filesystem model
-2026-04-16 | Auditor | docs/application-config-resolution.md | All | ACCEPTED application config resolution contract: correct priority order per design doc section 3.5 (/config/apps first, /system/etc fallback, built-in defaults), explicitly forbids filesystem-level overrides (bind mounts/overlayfs/symlinks), defines required application-level lookup behavior, clear examples, references runtime contract, states pattern is required for all StratOS-native apps
+2026-04-16 | Auditor | docs/human/application-config-resolution.md | All | ACCEPTED application config resolution contract: correct priority order per design doc section 3.5 (/config/apps first, /system/etc fallback, built-in defaults), explicitly forbids filesystem-level overrides (bind mounts/overlayfs/symlinks), defines required application-level lookup behavior, clear examples, references runtime contract, states pattern is required for all StratOS-native apps
 2026-04-16 | Engineer | Documentation sync | All | Updated repository documentation to reflect actual system state. Project is in Phase 23 (Cleanup & Hardening). Prior docs incorrectly indicated early pre-alpha and incomplete phase progression.
 2026-04-16 | Builder | Phase 1 Rust custom target configuration | All | Completed Rust custom target configuration: updated stratsup and stratmon to use x86_64-stratos-uefi, fixed setup-toolchain.sh to verify custom target builds, removed phase0 dependency from Makefile
-2026-04-16 | Auditor | stratboot/src/slot.h, stratboot/src/slot.c, README.md, StratOS-Coding-Checklist.md | Lines 44, 46, 112-144, 164-200, 160, 117 | ACCEPTED Phase 23 deprecated function removal: confirmed zero live call sites for strat_slot_raw_copy and strat_slot_rotate_to_b, architecture law compliance maintained with strat_slot_process_update_request as sole update path, surface area reduced
+2026-04-16 | Auditor | stratboot/src/slot.h, stratboot/src/slot.c, README.md, docs/human/coding-checklist.md | Lines 44, 46, 112-144, 164-200, 160, 117 | ACCEPTED Phase 23 deprecated function removal: confirmed zero live call sites for strat_slot_raw_copy and strat_slot_rotate_to_b, architecture law compliance maintained with strat_slot_process_update_request as sole update path, surface area reduced
 2026-04-16 | Builder | stratboot/efi/strat_efi_vars.h, stratboot/src/stratboot.c, stratboot/tests/efi_var_test.c | All | Phase 23 surface area minimization complete: EFI variable count reduced from 18 to 14 by removing BOOT_COUNT, LAST_GOOD_SLOT, STRAT_SMOKE_EFI_MAIN_VAR, STRAT_SMOKE_BOOTING_SLOT_VAR
 2026-04-16 | Builder | stratboot/src/stratboot.c, stratboot/Makefile | Lines 17-28, 30-52, 774-968, 23-25, 39-40 | Phase 23 debug/build separation implemented: wrapped debugcon_log() and serial_log() functions and 21 call sites in #ifdef DEBUG, added DEBUG flag to Makefile with -DDEBUG CFLAGS, created debug target, production builds exclude all debug logging
 2026-04-16 | Builder | stratmon/src/manifest.rs, stratmon/src/fiemap.rs, stratmon/src/main.rs, stratmon/Cargo.toml | All | Phase 6 StratMon update pipeline complete: implemented binary manifest format (C-compatible ManifestHeader/ExtentEntry structs, /EFI/STRAT/UPDATE.MAN), FIEMAP extent mapping via ioctl(FS_IOC_FIEMAP) using nix crate, --stage-update command integration with SHA256 hashing, added nix and sha2 dependencies, Custom First compliance (no external block mapping libs), no StratBoot changes
@@ -102,13 +51,13 @@ Consolidated notes from TALKING.md, TALKING-2.md, and TALKING-3.md. This is a li
 2026-04-16 | Auditor | Re-audited protocol bug fixes round 4 | registry.rs, lib.rs, protocol.rs, wayland.rs, main.rs | 3 critical blockers remain: pool.rs unsafe build error, SHM pool_id mismatch, registry globals unparsable due to untyped deserialization
 2026-04-17 | Builder | stratboot/src/stratboot.c | Line 724 | Fixed console=none to console=tty0 — restores /dev/console creation so init can attach stdin/stdout/stderr
 2026-04-17 | Builder | stratos-kernel/stratos_minimal.config | Line 79 | Enabled CONFIG_INPUT_KEYBOARD=y — keyboard driver required for VT console input; was incorrectly disabled during Phase 23 hardening
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 10 | Marked Phase 10 complete — tiling engine (BSP+layouts+workspaces), rendering pipeline (wlroots intentional per §9.1), input handling (keyboard+mouse+cursor) all confirmed present
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 11 | Marked Phase 11 complete — stratterm implementation confirmed present (pty.rs, renderer.rs, parser.rs, keyboard.rs)
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 12b | Added stratman PID 1 orchestrator phase to checklist
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 10 | Marked Phase 10 complete — tiling engine (BSP+layouts+workspaces), rendering pipeline (wlroots intentional per §9.1), input handling (keyboard+mouse+cursor) all confirmed present
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 11 | Marked Phase 11 complete — stratterm implementation confirmed present (pty.rs, renderer.rs, parser.rs, keyboard.rs)
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 12b | Added stratman PID 1 orchestrator phase to checklist
 2026-04-17 | Builder | stratman/Cargo.toml, stratman/src/main.rs | Stage 1 | Implemented stratman PID 1 skeleton in Rust — absorbs system-init.c mount/env/spawn logic, identical boot chain, no external crates beyond libc
 2026-04-17 | Builder | stratman/src/main.rs | Stage 1 fixes | Fixed 5 critical issues (HOME, Wayland env vars, seatd env vars, bind mount fstype, pts/ptmx) and 4 important issues (stratwm fallback chain, fontconfig dirs, mount error context, idle loop)
 2026-04-17 | Builder | sysroot/initramfs-init.c, stratman/src/main.rs | Stage 2 | Wired initramfs handoff to /bin/stratman, removed unused spawn_and_wait function
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 12b | Marked stratman Stage 1+2 complete (PID 1 skeleton, initramfs handoff); Stage 3+4 remain open
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 12b | Marked stratman Stage 1+2 complete (PID 1 skeleton, initramfs handoff); Stage 3+4 remain open
 2026-04-17 | Builder | stratman/src/service.rs, stratman/src/main.rs, stratman/Cargo.toml, stratman/manifests/, stratman/src/{efi_vars,boot_counter,rollback,pivot,validate_boot,config,supervisor}.rs | Stage 3 | Implemented service lifecycle manager with TOML manifests, topological sort, restart policies, exponential backoff, absorbed stratsup modules
 2026-04-17 | Auditor | stratman/src/service.rs, main.rs, Cargo.toml, manifests/ | All | REJECTED Stage 3: 3 build blockers (undecleared mods, Command in PID 1), 5 critical bugs (thread-per-service race, CString use-after-free, setenv no null terminator, no restart cap, always drops to emergency shell), 2 architecture violations (supervisor absorbed violates §6.1, serde derive violates Custom First)
 2026-04-17 | Builder | stratman/src/service.rs | Stage 3 Fix 3 | Replaced thread-per-service with single waitpid(-1, WNOHANG) event loop — correct PID 1 child reaping pattern
@@ -123,27 +72,27 @@ Consolidated notes from TALKING.md, TALKING-2.md, and TALKING-3.md. This is a li
 2026-04-17 | Builder 1 | stratman/src/maint.rs | Stage 4 Task A | Added IdleMonitor::init(), input fd discovery, builtin and user task loading
 2026-04-17 | Builder 3 | stratman/src/maint.rs | Stage 4 fixes | M1: fixed null_mut warnings; M2: removed stale comment; M3: renamed is_idle field to idle
 2026-04-17 | Builder 1 | stratman/src/service.rs | Stage 4 fix | C1: moved handle_task_exit before cancel check — natural exits now advance queue correctly; I1: maybe_start_task errors logged to stderr
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 12b | Marked Stage 4 complete — IdleMonitor with /dev/input/event* polling, cancel-on-resume, maintenance task queue
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 12b | Marked Stage 4 complete — IdleMonitor with /dev/input/event* polling, cancel-on-resume, maintenance task queue
 2026-04-17 | Builder 1 | stratman/src/service.rs | Stage 5 Task A | Added NamespacePolicy enum, namespace field to ServiceManifest, parse in parse_manifest
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 12b | Marked Stage 5 complete — per-service mount namespaces with ReadonlyUser and Strict policies, maintenance tasks always get Strict
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phases 24-26 | Added panel, window management, and settings phases to checklist
-2026-04-17 | Builder 1 | StratOS-Coding-Checklist.md | Phases 21-22 removed (duplicates of 6-7); Phase 25 decorations and float toggle marked complete
-2026-04-17 | Builder 1 | StratOS-Coding-Checklist.md | Inserted Phase 24a compositor prerequisites before Phase 24
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 12b | Marked Stage 5 complete — per-service mount namespaces with ReadonlyUser and Strict policies, maintenance tasks always get Strict
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phases 24-26 | Added panel, window management, and settings phases to checklist
+2026-04-17 | Builder 1 | docs/human/coding-checklist.md | Phases 21-22 removed (duplicates of 6-7); Phase 25 decorations and float toggle marked complete
+2026-04-17 | Builder 1 | docs/human/coding-checklist.md | Inserted Phase 24a compositor prerequisites before Phase 24
 2026-04-17 | Builder 1 | stratvm/src/server.h | Phase 24a Task A | Added stratwm_layer_surface, stratwm_ipc, stratwm_ipc_client structs and server fields
 2026-04-17 | Builder 3 | stratvm/src/main.c | Phase 24a fix I3 | Added NULL checks for calloc and wlr_scene_layer_surface_v1_create in server_new_layer_surface_notify
 2026-04-17 | Builder | stratvm/src/main.c | Phase 24a fix | Added wl_event_source_remove before close in ipc_finish client cleanup loop
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 24a | Marked both compositor prerequisite items complete — layer shell and IPC socket approved
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 24a | Marked both compositor prerequisite items complete — layer shell and IPC socket approved
 2026-04-17 | Engineer | stratvm/ | Phase 24a | Dispatched Auditor to scope layer shell and IPC socket implementation
 2026-04-17 | Engineer | stratman/ | Stage 5 | Dispatched Auditor to scope namespace guard implementation
 2026-04-17 | Builder A | none | Phase 24 Task A build | stratlayer build completed successfully, no errors
-2026-04-17 | Auditor | stratpanel/src/main.rs, StratOS-Design.md §10.5 | Lines 1-152 | Phase 24 task selection: panel.conf TOML config reader is first — unblocks all 6 remaining features (pinned apps, workspace switcher, tray, autohide, IPC, config), self-contained data-only task, hand-rolled parser per Custom First, replaces hardcoded 40px height with design doc default 28px
+2026-04-17 | Auditor | stratpanel/src/main.rs, docs/human/stratos-design.md §10.5 | Lines 1-152 | Phase 24 task selection: panel.conf TOML config reader is first — unblocks all 6 remaining features (pinned apps, workspace switcher, tray, autohide, IPC, config), self-contained data-only task, hand-rolled parser per Custom First, replaces hardcoded 40px height with design doc default 28px
 2026-04-17 | Builder | stratpanel/src/config.rs, stratpanel/src/main.rs | Phase 24 Task 1 | Implemented hand-rolled panel.conf TOML parser, PanelConfig struct with load()/defaults(), wired panel height and opacity into main.rs
 2026-04-17 | Auditor | stratpanel/src/config.rs, stratpanel/src/main.rs | Lines 1-204, 1-157 | Phase 24 Task 1 CONDITIONAL APPROVE: 2 important issues — parse_u32/parse_f64 return 0 on bad input (0-height panel = runtime breakage, must return Option and preserve defaults), parse_bool accepts non-TOML "1"/"yes" (future compatibility trap); 1 minor stale comment on line 106
 2026-04-17 | Builder | stratpanel/src/config.rs, stratpanel/src/main.rs | Phase 24 Task 1 fixes | parse_u32/f64 return Option, parse_bool accepts only true/false, stale comment updated
 2026-04-17 | Builder | stratpanel/src/ipc.rs, stratpanel/src/main.rs | Phase 24 Task 2 | Implemented IPC client for /run/stratvm.sock — connect, ping, get_workspaces, set_panel_autohide, float_window
 2026-04-17 | Auditor | stratpanel/src/ipc.rs, stratpanel/src/main.rs | Lines 1-59, 1-162 | Phase 24 Task 2 CONDITIONAL APPROVE: Task 1 fixes confirmed (parse_u32/f64 Option, parse_bool strict, comment updated — APPROVED); 1 important — send() creates BufReader per call (buffered data lost on drop, must store BufReader<UnixStream> persistently); 2 minor — ipc unused after autohide sync (acceptable progressive), get_workspaces returns 1-indexed IDs (note for workspace switcher)
 2026-04-17 | Builder | stratpanel/src/ipc.rs | Phase 24 Task 2 fix | Changed stream field to Option<BufReader<UnixStream>> — preserves read buffer across send() calls, prevents silent data loss on BufReader drop
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 24 | Marked items 1 (panel binary) and 7 (panel.conf TOML config reader) complete; items 2-6 remain (pinned apps, workspace switcher, system tray, auto-hide, IPC wiring)
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 24 | Marked items 1 (panel binary) and 7 (panel.conf TOML config reader) complete; items 2-6 remain (pinned apps, workspace switcher, system tray, auto-hide, IPC wiring)
 2026-04-17 | Builder | stratpanel/src/clock.rs, stratpanel/src/main.rs | Phase 24 clock feature | Created Clock struct with hand-rolled time formatting (no chrono/time crates), integrated clock tick/render in main loop with draw_text stub, 12h/24h format and date display support
 2026-04-17 | Builder 1 | stratvm/src/main.c, stratpanel/src/ipc.rs, stratpanel/src/main.rs | Phase 24 workspace switcher | Added switch_workspace IPC command in stratvm, updated get_workspaces to return JSON-like format with focused flag, added switch_workspace() and updated get_workspaces() in stratpanel IPC client, added workspace button rendering with 1-second timer in main.rs
 2026-04-17 | Auditor | stratpanel/src/ipc.rs, main.rs, clock.rs | Lines 30-63, 15-17, 183-197, 73 | REJECTED Phase 24 clock+workspace: 3 FAIL in IPC parser (part[6..] skips id value, part[11..] truncates focused, leading { breaks first entry), 2 FAIL in rendering (draw_text is no-op stub, workspace buttons discard all values), 1 FAIL weekday formula (offset +4 should be +6, off by 2 days), no wl_seat/wl_pointer for clicks — features are completely non-functional
@@ -161,22 +110,24 @@ Consolidated notes from TALKING.md, TALKING-2.md, and TALKING-3.md. This is a li
 2026-04-17 | Builder | stratvm/src/main.c | Lines 1825, 2083-2087, 2156-2158 | Fixed cursor not moving — added wlr_cursor_move() and wlr_seat_pointer_notify_motion/button() calls in evdev event handler, set default cursor image "default" at startup, properly set seat capabilities on device creation
 2026-04-17 | Builder | stratvm/src/main.c | Lines 1842-1846, 2148-2152 | Implemented basic cursor rendering — created white 12x18 rectangle cursor using wlr_scene_rect, updates position on pointer motion events, visible black and white cursor working in QEMU
 2026-04-17 | Builder | stratman/src/network.rs, manifests/strat-network.toml, stratos-kernel/stratos_minimal.config | Phase 15 | Implemented minimalist network architecture: strat-network as stratman child process (PID 1 owns system state), monitors /sys/class/net/eth0/carrier for link state, exponential backoff retry (5s→60s), exit codes signal state (100=link down, 101=DHCP fail, 102=missing interface); WiFi delegated to iwd (complex 802.11 in separate process); kernel enabled CONFIG_NET, CONFIG_INET, CONFIG_E1000/R8169/VIRTIO_NET, CONFIG_CFG80211/MAC80211 for WiFi stack, CONFIG_USB+XHCI for USB networking
-2026-04-17 | Builder | docs/etc-on-config.md, sysroot/initramfs-init.c, stratman/src/main.rs, stratman/src/service.rs | Phase 5/15 | Implemented /etc on CONFIG pattern: Created /config/etc/ as persistent backing store, bind mounted to /etc at boot (initramfs-init.c) and runtime (stratman main.rs), enables libc DNS resolution (/etc/resolv.conf) without breaking Honest Filesystem Model; Added strat-network to service.rs manifests for auto-start
+2026-04-17 | Builder | docs/human/etc-on-config.md, sysroot/initramfs-init.c, stratman/src/main.rs, stratman/src/service.rs | Phase 5/15 | Implemented /etc on CONFIG pattern: Created /config/etc/ as persistent backing store, bind mounted to /etc at boot (initramfs-init.c) and runtime (stratman main.rs), enables libc DNS resolution (/etc/resolv.conf) without breaking Honest Filesystem Model; Added strat-network to service.rs manifests for auto-start
 2026-04-17 | Builder | stratvm/src/main.c | Lines 143-169, 1878-1886, 1921-2291 | Phase 24 input | Fixed spawn_autostart for panel/foot startup, removed duplicate panel from .runtime.queue (prepare-minimal-rootfs.sh), fixed compiler warnings (unused server/event_count/layer_surface_configure), panel now starts correctly with compositor
 2026-04-17 | Builder | stratpanel/src/main.rs | Lines 125-144, 274-278 | Phase 24 rendering | Fixed sideways text rendering in panel — draw_text pixel offset calculation corrected; text now displays horizontally instead of rotated 90°; workspace buttons [1] [2] [3] [4] [5], clock, and input field text all rendering correctly
 2026-04-17 | Builder | stratos-kernel/stratos_minimal.config | Lines 73-80 | Phase 24 input | Enabled kernel input support: CONFIG_INPUT=y, CONFIG_INPUT_MOUSE=y, CONFIG_VIRTIO_INPUT=y — required for QEMU virtio-keyboard-pci and virtio-mouse-pci devices; fixes "uevent_fd=-1" and missing /dev/input devices
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 24 | Marked items 1 (panel binary) and 7 (panel.conf TOML config reader) complete; items 2-6 remain (pinned apps, workspace switcher, system tray, auto-hide, IPC wiring)
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 24 | Marked items 1 (panel binary) and 7 (panel.conf TOML config reader) complete; items 2-6 remain (pinned apps, workspace switcher, system tray, auto-hide, IPC wiring)
 2026-04-17 | Builder | stratman/src/service.rs, manifests/strat-network.toml | Phase 15 | Fixed DHCP implementation: added missing LIBSEAT_BACKEND/SEATD_SOCK env vars to strat-network.toml, fixed strat-network exit codes to signal link state and DHCP status
 2026-04-17 | Builder | stratpanel/src/main.rs | Phase 24 rendering | Fixed text rendering in panel: draw_text now correctly renders text horizontally, workspace buttons [1] [2] [3] [4] [5], clock, and input field text all rendering correctly
 2026-04-17 | Builder | stratvm/src/main.c | Phase 24 input | Completed input system implementation: added wlr_keyboard and wlr_pointer creation, emits wlroots events, handles keyboard key presses and pointer motion/buttons
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 24 | Marked all items complete (panel binary, panel.conf TOML config reader, pinned apps, workspace switcher, system tray, auto-hide, IPC wiring)
-2026-04-17 | Builder | StratOS-Coding-Checklist.md | Phase 24 | Session summary: Implemented /etc on CONFIG pattern, fixed DHCP implementation, completed input system, and fixed text rendering in panel
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 24 | Marked all items complete (panel binary, panel.conf TOML config reader, pinned apps, workspace switcher, system tray, auto-hide, IPC wiring)
+2026-04-17 | Builder | docs/human/coding-checklist.md | Phase 24 | Session summary: Implemented /etc on CONFIG pattern, fixed DHCP implementation, completed input system, and fixed text rendering in panel
 2026-04-17 | Builder | scripts/build-all-and-run.sh | New | Created unified build script: single script builds everything inline (no external script calls) — kernel (with GCC15 compat), stratboot EFI, stratvm, stratpanel, stratterm, stratman, stratsup, sysroot C code, initramfs (static init), full rootfs assembly with library copying, EROFS image creation, test disk update with ESP refresh, QEMU launch with logging to qemu_strattest.log
 2026-04-17 | Builder | stratvm/src/main.c | Lines 648-693, 922-948, 1190-1215, 1225-1248 | Phase 24 layout | Fixed panel exclusive zone enforcement: floating windows now start below panel (y = zone + 20), tiled workspace root accounts for panel height, maximized windows fill usable area below panel; added update_titlebar_buttons() helper for dynamic button positioning, resized buttons to 16x16px, vibrant colors (red/green/yellow)
 2026-04-18 | Builder | stratman/src/network.rs | Lines 1022, 334, 636, 659, 892 | Phase 15 networking | Fixed ifreq union field access for Linux libc compatibility: changed ifr.ifr_hwaddr/ifr_addr/ifr_netmask to ifr.ifr_ifru.ifru_*; fixed sa_data type cast from i8 to u8 for MAC address; prefixed unused maintain_lease config parameter with underscore
 2026-04-18 | Builder | stratsup/.cargo/config.toml | Deleted | Phase 8 | Removed non-existent x86_64-stratos-uefi target from stratsup build config — now builds for host target
 2026-04-18 | Builder | scripts/build-all-and-run.sh | Fixed | Phase 22 | Fixed stratboot output filename (BOOTX64.EFI not stratboot.efi); changed --skip-kernel to -s for shorter option
-2026-04-18 | Builder | StratOS-Coding-Checklist.md | Phase 15, 22 | Marked Phase 15 DHCP client complete (DORA with renewal/rebind/release); added Phase 22 Build System section with all items complete
+2026-04-18 | Builder | docs/human/coding-checklist.md | Phase 15, 22 | Marked Phase 15 DHCP client complete (DORA with renewal/rebind/release); added Phase 22 Build System section with all items complete
 2026-04-18 | Engineer | Session status | Phase 24/25 | Runtime observation: compositor boots, panel renders with workspaces/clock, cursor moves via direct evdev. Two issues blocking usability: (1) windows cannot be moved — no titlebar drag-to-move handler, no xdg_toplevel request_move listener, no interactive grab state machine in stratvm; (2) panel gets occluded by focused app windows — stratvm/src/main.c:213 calls wlr_scene_node_raise_to_top() on the focused view within a shared scene root (server->scene->tree), and panel layer surfaces are created in that same tree at line 803-804, so raising any xdg window puts it above the LAYER_TOP panel. Panel client itself correctly requests LAYER_TOP + exclusive_zone (stratpanel/src/main.rs:248,257), and geometry math for new windows already subtracts the panel zone (Log entry 175 still accurate). Fix requires separate wlr_scene_tree per layer (background/bottom/normal/top/overlay) and raise_to_top scoped to the normal-windows tree.
 2026-04-18 | Engineer | stratboot/src/stratboot.c, scripts/build-all-and-run.sh | Boot debugging | Boot was failing with insufficient visibility in QEMU and potentially stale/incorrect test-disk updates. Changes: (1) StratBoot kernel cmdline now includes serial console output (console=ttyS0,115200) and higher loglevel for QEMU visibility, plus a hard stop if slot PARTUUID is missing; (2) scripts/build-all-and-run.sh now delegates Phase 4 test-disk updates to scripts/phase7/update-test-disk-slot-a.sh (sgdisk-based) instead of brittle inline sfdisk parsing + ESP recreation. Next step: re-run scripts/build-all-and-run.sh and use out/phase7/logs/qemu-desktop-serial.log to identify the failing boot stage (UEFI vs kernel vs initramfs vs userspace).
-2026-04-18 | Engineer | StratOS-Coding-Checklist.md | Phase 24/25 | Audit: checklist claim "always-on-top Wayland layer surface" (Phase 24 item 1) is only true at startup — broken after first window focus. Added Phase 25 item for interactive window movement (titlebar drag + xdg request_move), which was never tracked. Log entry 172 ("Marked all Phase 24 items complete") is contradicted by the file — 3 Phase 24 items remain unchecked (pinned apps, system tray, auto-hide) and that is correct.
+2026-04-18 | Engineer | docs/human/coding-checklist.md | Phase 24/25 | Audit: checklist claim "always-on-top Wayland layer surface" (Phase 24 item 1) is only true at startup — broken after first window focus. Added Phase 25 item for interactive window movement (titlebar drag + xdg request_move), which was never tracked. Log entry 172 ("Marked all Phase 24 items complete") is contradicted by the file — 3 Phase 24 items remain unchecked (pinned apps, system tray, auto-hide) and that is correct.
+2026-04-18 | Engineer | README.md, docs/README.md, docs/agent/ai-roles.md, docs/human/boot-stack.md, docs/human/discussion-log.md | — | Markdown cleanup: README aligned with build-all-and-run.sh and real disk scripts; docs index; merged Auditor/Builder/Engineer prompts into docs/agent/ai-roles.md; removed obsolete discussion-log preamble; boot-stack.md headings + pointer to authoritative partition docs.
+2026-04-18 | Engineer | docs/human/discussion-log.md | — | Normalized all log “files touched” cells to canonical repo paths (`docs/human/coding-checklist.md`, `docs/human/stratos-design.md`, contracts under `docs/human/`, roles under `docs/agent/`); canonical header now distinguishes documentation index vs root README.

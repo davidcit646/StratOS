@@ -75,8 +75,8 @@ Runtime behavior:
 
 ## References
 
-- **Source of truth:** StratOS-Design.md section 3.5 "Config Priority Stack"
-- **Runtime contract:** docs/runtime-persistence-contract.md (defines path ownership)
+- **Source of truth:** [stratos-design.md](stratos-design.md) section 3.5 "Config Priority Stack"
+- **Runtime contract:** [runtime-persistence-contract.md](runtime-persistence-contract.md) (defines path ownership)
 
 ## Applicability
 
