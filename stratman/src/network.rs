@@ -1019,7 +1019,7 @@ fn dhcp_rebind(iface: &str, lease: &DhcpLease) -> Result<DhcpLease, String> {
 }
 
 /// Maintain DHCP lease (renewal at T1, rebind at T2, release on link down)
-fn maintain_lease(iface: &str, lease: &mut DhcpLease, config: &NetworkConfig) {
+fn maintain_lease(iface: &str, lease: &mut DhcpLease, _config: &NetworkConfig) {
     let mut current_lease = lease.clone();
     let mut renewal_attempts = 0;
     const MAX_RENEWAL_ATTEMPTS: u32 = 3;
