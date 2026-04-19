@@ -1,81 +1,67 @@
 # Agent prompt: live bootable ISO (and path to installer)
 
-Copy everything below the line into a new agent chat (or Cursor agent) as the **user message**. Add a one-line preamble if you want **Milestone A only** (ISO boots to a usable live session, no install wizard) vs **Milestone B** (partitioning + copy StratBoot + first-boot on target disk).
+Copy everything below the line into a new agent chat (or Cursor agent) as the **user message**. Add a one-line preamble if you want **follow-up work only** (this repo already ships a **Milestone A** xorriso pipeline) vs **green-field ISO design**.
 
 ---
 
 ## Mission
 
-Deliver a **bootable x86_64 UEFI ISO** (and/or raw disk image suitable for `dd` / Ventoy) that runs **StratOS’s own stack**—not a generic rescue distro. **Milestone A** is success if the image boots to **Linux → initramfs → userspace** with Strat’s layout policy honored as much as practical for a live session. **Milestone B** (full install flow, diagnostic menus, typed CONFIRM) is specified in the human design but can land in follow-up PRs once A is stable.
+StratOS targets a **bootable x86_64 UEFI hybrid ISO** that runs the in-tree stack (not a generic rescue image). **Milestone A** (live session boots end-to-end) is implemented via **`./scripts/build-live-iso.sh`** → `out/live/stratos-live.iso` and **`docs/human/live-iso.md`**. **Milestone B** (graphical installer, preserve-CONFIG flows) remains design work in **stratos-design.md** section **17**; a **destructive CLI** install exists as **`scripts/strat-installer.sh`** → `/bin/strat-installer` in the phase7 rootfs / ISO payloads.
 
 ---
 
 ## Authoritative specs
 
-- **`docs/human/stratos-design.md` §17** — Live USB / installer / diagnostic philosophy, flow sketches, **§17.9 ISO build** (`mkosi`, &lt; ~2GB target, Ventoy-compatible).
-- **`docs/human/runtime-persistence-contract.md`** — partition roles; live session must not “fake” `/system` mutability (no overlay on immutable system slot semantics; tmpfs or explicit live-only paths are OK if documented).
+- **`docs/human/stratos-design.md`** — section **17** (live USB / installer / diagnostic philosophy; section **17.9** still describes **mkosi** as a long-term packaging preference).
+- **`docs/human/live-iso.md`** — **canonical in-repo** live vs installed behavior, `strat.live` / `strat.live_iso`, xorriso inputs, USB and bare-metal notes.
+- **`docs/human/runtime-persistence-contract.md`** — partition roles; live must not pretend `/system` is mutable (tmpfs for CONFIG/APPS/HOME semantics is documented).
 - **`docs/human/boot-stack.md`**, **`docs/agent/stratos-design.md`**, **`docs/agent/stratboot.md`**, **`docs/agent/stratsup-sysroot.md`**.
 
-**Today’s dev path (must stay working):** `build-all-and-run.sh`, `scripts/create-test-disk.sh`, `scripts/update-test-disk.sh`, `sysroot/initramfs-init.c`, `stratboot/`, `stratman/`. Do **not** break QEMU-all-in-one unless the team explicitly accepts a migration; ISO work should **add** a pipeline (new scripts / `mkosi` config) alongside existing flow.
+**Dev paths (do not break without an explicit migration):** `build-all-and-run.sh`, `scripts/create-test-disk.sh`, `scripts/update-test-disk.sh`, `sysroot/initramfs-init.c`, `stratboot/`, `stratman/`. ISO tooling **adds** alongside the disk image workflow.
 
 ---
 
-## Current facts (grep before designing)
+## Already in the tree (grep these before proposing duplicates)
 
-| Area | Why it matters |
-|------|----------------|
-| `sysroot/initramfs-init.c` | Expects **GPT PARTUUID** `root=` and a **fixed** mount sequence for installed disks. |
-| `stratboot/` | Loads kernel+initrd from **ESP** paths; EFI variables for slots. Live medium may use **different** ESP layout or a **live-only** boot entry—document and implement deliberately. |
-| `build-all-and-run.sh` | Produces kernel, `BOOTX64.EFI`, initramfs, rootfs, EROFS, **test disk** refresh. ISO build should **reuse** these artifacts or call the same build stages. |
-| `stratman/` | PID 1 assumptions (mounts, manifests). Live may need **`strat.live=1`** (or similar) cmdline + conditional paths in **one** place (`initramfs` and/or `stratman`)—avoid silent divergence. |
-
----
-
-## Milestone A — Live ISO (definition of done)
-
-1. **Build:** One documented command (e.g. `./scripts/build-live-iso.sh` or `mkosi …`) produces **`out/…/*.iso`** (or equivalent) from the existing tree without manual copy-paste of fifteen binaries.
-2. **Contents (minimum):**  
-   - **StratBoot** `BOOTX64.EFI` on the ISO’s ESP (or hybrid MBR/ESP if required for Ventoy).  
-   - **Kernel** + **initramfs** that StratBoot can load (same naming conventions as QEMU unless you unify).  
-   - **Live root:** e.g. EROFS/squashfs image containing the same userspace slice as phase7 rootfs **or** a documented slimmer subset—**must** boot to **stratman → stratwm** (or, if temporarily blocked, to a **clear** emergency shell with message; no silent hang).
-3. **Hardware:** Boots on **QEMU OVMF** with the new ISO **and** one sentence in README on testing on **real USB** (Ventoy optional stretch).
-4. **Docs:** New **`docs/human/live-iso.md`** (how to build, flash, boot) + **`docs/human/coding-checklist.md`** new items or Phase **22** bullets for “ISO pipeline” so status is honest.
-5. **CI (optional but preferred):** extend `.github/workflows/` with an **artifact** or **smoke** job that builds ISO (may be heavy—use `workflow_dispatch` or cache if needed).
+| Path | Role |
+|------|------|
+| `scripts/build-live-iso.sh` | **xorriso** + **mtools** + embedded FAT ESP; reads `out/phase7/slot-system.erofs`, `out/phase7/initramfs.cpio.gz`, `out/phase4/vmlinuz`, `out/phase3/BOOTX64.EFI`; copies initrd as **`initramfs.img`** (same blob, conventional name); **`-volid STRATOS_LIVE`** for label discovery; writes `EFI/STRAT/LIVE` marker on ESP. |
+| `scripts/strat-installer.sh` | Fresh wipe → GPT layout matching `create-test-disk.sh`; finds ISO via **`LABEL=STRATOS_LIVE`** (`blkid`) then `/dev/sr0`…`sr31`; copies payloads from mount or `--source-dir`. |
+| `sysroot/initramfs-init.c` | Live cmdline branches (`strat.live`, `strat.live_iso`) vs GPT `root=` install path; live ISO mount prefers **PVD volume id `STRATOS_LIVE`** then block-device scan. |
+| `stratboot/src/stratboot.c` | Detects live medium; passes `strat.live=1 strat.live_iso=1` when `EFI/STRAT/LIVE` exists on the boot FAT. |
 
 ---
 
-## Milestone B — Install (stretch; after A)
+## Open / follow-up work (pick one slice per PR)
 
-Align implementation with **§17.2–17.8**: target disk selection, destructive CONFIRM, GPT creation matching **`create-test-disk.sh`** semantics, writing slots + CONFIG + HOME, ESP StratBoot install, EFI vars. Likely a **new Rust or C binary** (`strat-installer` / live helper) plus StratBoot paths when booted from removable media. **Do not** implement full UI polish before Milestone A ISO boots.
+1. **Packaging:** Optional **mkosi** (or similar) profile that consumes the same `out/` artifacts — design section **17.9** target; today the shell script is the source of truth.
+2. **Installer UX:** Menus, diagnostics, preserve-CONFIG options per design section **17.2–17.8** (today: typed-phrase CLI only in `strat-installer`).
+3. **CI:** Optional workflow to build ISO (heavy; may stay `workflow_dispatch`).
+4. **Ventoy / hardware matrix:** **Unsupported** in-tree until tested; add a short matrix to `live-iso.md` when reports exist.
 
 ---
 
 ## Constraints
 
-- **Custom first:** prefer **`mkosi`** per design §17.9; if you must use `xorriso`/`grub-mkrescue`-style glue, justify in README and keep scripts small and auditable.
-- **No duplicate magic numbers:** GPT offsets, partition names, and `PARTUUID` assumptions live in **one** truth (scripts + initramfs + StratBoot); ISO layout should **call** or **generate from** the same spec (tables, shared `.json`, or generated headers—pick one approach and document it).
-- **Honest filesystem:** live session must not violate the **spirit** of §3.4 (no “pretend” mutable `/system` on the slot image). If you use tmpfs overlays for `/etc` or `/var` in live-only mode, document under `docs/human/live-iso.md`.
-- **StratMon / StratBoot law unchanged:** installer may stage files; **block-level slot surgery** remains StratBoot’s job at reboot unless design is explicitly revised (then update human doc in the same change).
+- **Custom first:** the **in-tree** ISO path is **`xorriso`** + small helpers; **`mkosi`** is an admissible **replacement layer** if it stays reproducible and documented—do not leave two divergent ISO stories.
+- **Single source of partition truth:** GPT names, sizes, and `PARTUUID` flow through `scripts/create-test-disk.sh`, `initramfs-init.c`, and StratBoot; installer and ISO must stay aligned.
+- **Honest filesystem:** live session must not violate the spirit of **stratos-design** filesystem honesty (section **3.4**); tmpfs live policy is spelled out in `live-iso.md`.
+- **StratMon / StratBoot:** block-level slot surgery remains bootloader-owned at reboot; `strat-installer` does partition + `dd` + ESP file copies, not StratMon raw slot writes.
 
 ---
 
-## Suggested execution order
+## Suggested execution order (for new work)
 
-1. Read **`docs/human/stratos-design.md` §17.9** and trace **`build-all-and-run.sh`** outputs (`out/` layout).
-2. Prototype **ESP + kernel + initrd + one EROFS root** in a directory tree; boot in QEMU with **ISO attached** (not only `-drive file=test-disk.img`).
-3. Add **`mkosi`** manifest(s) or wrapper that assemble that tree from existing build artifacts.
-4. Add **`strat.live=1`** (or equivalent) end-to-end: kernel cmdline → initramfs → optional `stratman` branch; verify **panel + stratterm** or minimal shell.
-5. Only then start **Milestone B** partitioning/installer binary.
-
-Start with a **short architecture note** (live vs installed mount graph) in `docs/human/live-iso.md`, then implement Milestone A.
+1. Read **`docs/human/live-iso.md`** and run **`./scripts/build-live-iso.sh`** after a successful **`./build-all-and-run.sh -s`**.
+2. Validate on **real UEFI hardware** (USB or optical); confirm **`stratman` → stratvm → stratpanel/stratterm** or note the failure mode in the human doc.
+3. Only then layer **mkosi**, **CI**, or **rich installer UI**—each as its own reviewable change.
 
 ---
 
-## Definition of done (PR summary)
+## Definition of done (when changing this area)
 
-- Commands to build ISO + expected artifact paths.
-- QEMU one-liner (or `scripts/run-qemu-iso.sh`) proving boot.
-- Checklist / human doc updated so “live ISO” is trackable, not tribal knowledge.
+- Commands + artifact paths updated in **`docs/human/live-iso.md`** and **`docs/human/coding-checklist.md`** Phase **22** if behavior shifts.
+- No stale references claiming ISO is “future only” while `build-live-iso.sh` exists.
 
 ---
 

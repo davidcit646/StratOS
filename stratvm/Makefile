@@ -7,10 +7,13 @@ WLROOTS_PKG := $(shell \
 	elif $(PKG_CONFIG) --exists wlroots-0.19; then echo wlroots-0.19; \
 	elif $(PKG_CONFIG) --exists wlroots-0.18; then echo wlroots-0.18; \
 	elif $(PKG_CONFIG) --exists wlroots-0.17; then echo wlroots-0.17; \
+	elif $(PKG_CONFIG) --exists wlroots-0.20; then echo wlroots-0.20; \
+	elif $(PKG_CONFIG) --exists wlroots-0.21; then echo wlroots-0.21; \
+	elif $(PKG_CONFIG) --exists wlroots-0.22; then echo wlroots-0.22; \
 	else echo; fi)
 
 ifeq ($(strip $(WLROOTS_PKG)),)
-$(error wlroots pkg-config entry not found (wlroots / wlroots-0.19 / wlroots-0.18 / wlroots-0.17))
+$(error wlroots pkg-config not found — install wlroots dev (e.g. Fedora wlroots-devel, Debian libwlroots-dev). Tried: wlroots, wlroots-0.17 … 0.22)
 endif
 
 WL_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)

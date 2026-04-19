@@ -1,0 +1,3 @@
+name = "strat-wpa"
+exec = "/bin/strat-wpa.sh"
+restart = "always"

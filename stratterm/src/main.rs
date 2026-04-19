@@ -15,7 +15,9 @@ use keyboard::{is_control_key, keysym_to_char, keysym_to_control};
 use nix::poll::{poll, PollFd, PollFlags};
 use parser::VtParser;
 use pty::Pty;
-use renderer::{Renderer, UiOverlay};
+use renderer::{
+    ContentView, Renderer, SplitLayout, TitleBarHit, UiOverlay,
+};
 use screen::ScreenBuffer;
 use rusqlite::{Connection, OpenFlags};
 use std::fs;
@@ -49,15 +51,6 @@ const BTN_LEFT: u32 = 272;
 const MOUSE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(450);
 /// `wl_pointer.axis` — vertical scroll (Wayland core protocol).
 const WL_POINTER_AXIS_VERTICAL_SCROLL: u32 = 0;
-
-#[derive(Clone, Copy, Debug)]
-struct BrowserLayout {
-    panel_x: i32,
-    panel_width: i32,
-    list_start_y: i32,
-    list_line_height: i32,
-    list_visible_rows: usize,
-}
 
 fn sync_shell_cwd(pty: &Pty, last_shell_cwd: &mut Option<String>) -> Option<String> {
     let path = format!("/proc/{}/cwd", pty.child_pid());
@@ -93,6 +86,13 @@ fn update_status_title(window: &mut WaylandWindow, browser: &FileBrowser, screen
 
 fn trim_for_width(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+fn default_file_explorer_view(s: &str) -> ViewMode {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "tree" => ViewMode::Tree,
+        _ => ViewMode::Flat,
+    }
 }
 
 fn shell_single_quote(path: &str) -> String {
@@ -152,60 +152,55 @@ fn indexer_preview_stub() -> Option<String> {
     Some(format!("Spotlite: {count} paths ({detail})"))
 }
 
-fn browser_visible_range(selected: usize, len: usize) -> (usize, usize) {
+/// Slice of entries to draw in the file list, sized to match the renderer row cap (`list_band.row_count`).
+fn browser_visible_range(selected: usize, len: usize, max_visible: usize) -> (usize, usize) {
     if len == 0 {
         return (0, 0);
     }
-    let start = selected.saturating_sub(6);
-    let end = (start + 14).min(len);
-    (start, end)
-}
-
-fn browser_layout(width: i32) -> BrowserLayout {
-    let panel_width = (width / 3).max((FONT_WIDTH as i32) * 36);
-    BrowserLayout {
-        panel_x: width.saturating_sub(panel_width),
-        panel_width,
-        list_start_y: 6 + FONT_HEIGHT as i32 + 4,
-        list_line_height: FONT_HEIGHT as i32,
-        list_visible_rows: 16,
+    let w = max_visible.max(1).min(len).min(32);
+    let mut start = selected.saturating_sub(w / 2);
+    if start + w > len {
+        start = len.saturating_sub(w);
     }
+    let end = start + w;
+    (start, end)
 }
 
 fn build_overlay(
     browser: &FileBrowser,
     screen: &ScreenBuffer,
-    browser_active: bool,
     selected_index: usize,
     browser_message: &str,
     ghost_suffix: &str,
+    list_row_cap: usize,
+    status_bar_enabled: bool,
 ) -> UiOverlay {
     let mode = match browser.view_mode() {
         ViewMode::Flat => "flat",
         ViewMode::Tree => "tree",
     };
-    let mut overlay = UiOverlay {
-        status_chip: format!(
+    let status_chip = if status_bar_enabled {
+        format!(
             "mode:{mode} items:{} scroll:{} cwd:{}",
             browser.entries().len(),
             screen.scrollback_offset,
             browser.cwd().display()
-        ),
-        browser_active,
+        )
+    } else {
+        String::new()
+    };
+    let mut overlay = UiOverlay {
+        status_chip,
         browser_title: format!(
             "Browser [{}] ({})",
             mode,
-            trim_for_width(&browser.cwd().display().to_string(), 36)
+            trim_for_width(&browser.cwd().display().to_string(), 48)
         ),
         browser_lines: Vec::new(),
         preview_title: "Preview".to_string(),
         preview_lines: Vec::new(),
         ghost_suffix: ghost_suffix.to_string(),
     };
-
-    if !browser_active {
-        return overlay;
-    }
 
     let entries = browser.entries();
     if entries.is_empty() {
@@ -223,7 +218,7 @@ fn build_overlay(
     }
 
     let selected = selected_index.min(entries.len().saturating_sub(1));
-    let (start, end) = browser_visible_range(selected, entries.len());
+    let (start, end) = browser_visible_range(selected, entries.len(), list_row_cap);
     for (index, entry) in entries.iter().enumerate().take(end).skip(start) {
         let marker = if index == selected { ">" } else { " " };
         let indent = " ".repeat(entry.depth * 2);
@@ -235,7 +230,7 @@ fn build_overlay(
         };
         overlay
             .browser_lines
-            .push(format!("{marker} {}", trim_for_width(&label, 42)));
+            .push(format!("{marker} {}", trim_for_width(&label, 72)));
     }
 
     let selected_entry = &entries[selected];
@@ -266,35 +261,45 @@ fn build_overlay(
     overlay
 }
 
-/// True when the pointer is in the right-hand browser column (list + preview).
-fn pointer_in_browser_panel(pointer_x: i32, width: i32) -> bool {
-    let layout = browser_layout(width);
-    pointer_x >= layout.panel_x && pointer_x < layout.panel_x + layout.panel_width
+/// True when the pointer is over the **file list rows** only (not preview, not title bar).
+fn pointer_in_filesystem_list(pointer_x: i32, pointer_y: i32, layout: &SplitLayout) -> bool {
+    if pointer_y < 0 || pointer_y >= layout.buffer_height as i32 {
+        return false;
+    }
+    let bw = layout.buffer_width as i32;
+    if pointer_x < 0 || pointer_x >= bw {
+        return false;
+    }
+    let band = layout.list_band();
+    let top = band.list_top as i32;
+    let bottom = band.bottom_exclusive() as i32;
+    pointer_y >= top && pointer_y < bottom
 }
 
 fn entry_index_from_pointer(
     pointer_x: i32,
     pointer_y: i32,
-    width: i32,
+    layout: &SplitLayout,
     selected: usize,
     entry_count: usize,
 ) -> Option<usize> {
     if entry_count == 0 {
         return None;
     }
-    let layout = browser_layout(width);
-    if pointer_x < layout.panel_x || pointer_x >= layout.panel_x + layout.panel_width {
+    let band = layout.list_band();
+    let list_start_y = band.list_top as i32;
+    let bottom = band.bottom_exclusive() as i32;
+    let bw = layout.buffer_width as i32;
+    if pointer_x < 0 || pointer_x >= bw || pointer_y < list_start_y || pointer_y >= bottom {
         return None;
     }
-    if pointer_y < layout.list_start_y {
-        return None;
-    }
-    let row = ((pointer_y - layout.list_start_y) / layout.list_line_height) as usize;
-    if row >= layout.list_visible_rows {
+    let row = ((pointer_y - list_start_y) / FONT_HEIGHT as i32) as usize;
+    let max_rows = band.row_count as usize;
+    if row >= max_rows {
         return None;
     }
 
-    let (start, end) = browser_visible_range(selected, entry_count);
+    let (start, end) = browser_visible_range(selected, entry_count, band.row_count as usize);
     let index = start + row;
     if index >= end || index >= entry_count {
         None
@@ -451,48 +456,73 @@ fn render_frame(
     screen: &ScreenBuffer,
     window: &mut WaylandWindow,
     browser: &FileBrowser,
-    browser_active: bool,
+    width: i32,
+    height: i32,
+    cols: usize,
+    focus: ContentView,
     browser_selected: usize,
     browser_message: &str,
     ghost_suffix: &str,
+    client_title_bar: bool,
+    status_bar_enabled: bool,
 ) -> Result<(), String> {
+    let layout = SplitLayout::compute(width, height, cols, client_title_bar);
+    let list_row_cap = layout.list_band().row_count as usize;
     renderer.render(
         screen,
         window,
         Some(&build_overlay(
             browser,
             screen,
-            browser_active,
             browser_selected,
             browser_message,
             ghost_suffix,
+            list_row_cap,
+            status_bar_enabled,
         )),
+        &layout,
+        focus,
     )
 }
 
 fn main() -> Result<(), String> {
+    let strat_cfg = stratsettings::StratSettings::load().unwrap_or_default();
+    let client_title_bar = strat_cfg.stratterm.file_explorer.client_title_bar_enabled;
+    let status_bar_enabled = strat_cfg.stratterm.file_explorer.status_bar_enabled;
+
     let mut window = WaylandWindow::new(INITIAL_WIDTH, INITIAL_HEIGHT)
         .map_err(|e| format!("Failed to create Wayland window: {}", e))?;
 
     let (mut width, mut height) = window.get_size();
     let mut cols = (width as usize) / FONT_WIDTH;
-    let mut rows = (height as usize) / FONT_HEIGHT;
+    let mut layout = SplitLayout::compute(width, height, cols, client_title_bar);
+    let mut rows = layout.terminal_rows.max(1) as usize;
 
     let mut screen = ScreenBuffer::new(rows, cols);
-    screen.set_scrollback_max(SCROLLBACK_LINES);
+    let scrollback_cap = {
+        let n = strat_cfg.stratterm.term.scrollback_max_lines;
+        if n > 0 {
+            n
+        } else {
+            SCROLLBACK_LINES
+        }
+    };
+    screen.set_scrollback_max(scrollback_cap);
     let pty = Pty::new(rows as u16, cols as u16)
         .map_err(|e| format!("Failed to create PTY: {}", e))?;
     let frecency = FrecencyStore::open_default().ok();
-    let mut file_browser = FileBrowser::new(PathBuf::from("/home"));
+    let explorer_view = default_file_explorer_view(&strat_cfg.stratterm.file_explorer.default_view);
+    let mut file_browser =
+        FileBrowser::with_view_mode(PathBuf::from("/home"), explorer_view);
     let mut parser = VtParser::new();
     let mut renderer = Renderer::new(width as u32, height as u32);
 
     let mut typed_line = String::new();
     let mut ghost_suffix = refresh_ghost_suffix("", frecency.as_ref());
-    let mut browser_active = false;
+    let mut focus = ContentView::Terminal;
     let mut browser_selected = 0usize;
     let mut browser_message =
-        String::from("F7 toggle | Enter open | Space tree | Left parent");
+        String::from("Explorer above, shell below  |  F7 or title bar switches focus");
     let mut pending_script_path: Option<PathBuf> = None;
     let mut pending_script_ts: Option<Instant> = None;
     let mut pointer_x = 0i32;
@@ -505,10 +535,15 @@ fn main() -> Result<(), String> {
         &screen,
         &mut window,
         &file_browser,
-        browser_active,
+        width,
+        height,
+        cols,
+        focus,
         browser_selected,
         &browser_message,
         &ghost_suffix,
+        client_title_bar,
+        status_bar_enabled,
     )
     .map_err(|e| format!("Initial render failed: {}", e))?;
     update_status_title(&mut window, &file_browser, &screen);
@@ -562,10 +597,15 @@ fn main() -> Result<(), String> {
                 &screen,
                 &mut window,
                 &file_browser,
-                browser_active,
+                width,
+                height,
+                cols,
+                focus,
                 browser_selected,
                 &browser_message,
                 &ghost_suffix,
+                client_title_bar,
+                status_bar_enabled,
             )
             .map_err(|e| format!("Render failed: {}", e))?;
             update_status_title(&mut window, &file_browser, &screen);
@@ -576,6 +616,7 @@ fn main() -> Result<(), String> {
                 .poll_events()
                 .map_err(|e| format!("Wayland poll failed: {}", e))?;
             let mut ui_dirty = false;
+            layout = SplitLayout::compute(width, height, cols, client_title_bar);
 
             for event in events {
                 match event {
@@ -592,9 +633,19 @@ fn main() -> Result<(), String> {
                         last_click_ts = None;
                     }
                     stratlayer::Event::PointerAxis { axis, value } => {
-                        if browser_active
+                        if Renderer::title_bar_pick(
+                            pointer_x,
+                            pointer_y,
+                            layout.buffer_width,
+                            layout.title_bar_h,
+                        )
+                            .is_some()
+                        {
+                            continue;
+                        }
+                        if focus == ContentView::Filesystem
                             && axis == WL_POINTER_AXIS_VERTICAL_SCROLL
-                            && pointer_in_browser_panel(pointer_x, width)
+                            && pointer_in_filesystem_list(pointer_x, pointer_y, &layout)
                         {
                             let entry_count = file_browser.entries().len();
                             if entry_count > 0 {
@@ -620,11 +671,48 @@ fn main() -> Result<(), String> {
                         }
                     }
                     stratlayer::Event::PointerButton { button, state } => {
-                        if browser_active && state == 1 && button == BTN_LEFT {
+                        if state == 1 && button == BTN_LEFT {
+                            if let Some(hit) = Renderer::title_bar_pick(
+                                pointer_x,
+                                pointer_y,
+                                layout.buffer_width,
+                                layout.title_bar_h,
+                            ) {
+                                match hit {
+                                    TitleBarHit::FilesTab => {
+                                        focus = ContentView::Filesystem;
+                                        browser_message =
+                                            "Focus: Files (F7 or Terminal tab for shell)".to_string();
+                                        ui_dirty = true;
+                                    }
+                                    TitleBarHit::TerminalTab => {
+                                        focus = ContentView::Terminal;
+                                        browser_message =
+                                            "Focus: Terminal (F7 or Files tab for explorer)".to_string();
+                                        ui_dirty = true;
+                                    }
+                                    TitleBarHit::Close => {
+                                        // Match EOF exit path: wait for shell; Wayland releases on process teardown.
+                                        let _ = pty.wait();
+                                        return Ok(());
+                                    }
+                                }
+                                continue;
+                            }
+                            let py = pointer_y as u32;
+                            if py >= layout.terminal_top {
+                                focus = ContentView::Terminal;
+                                ui_dirty = true;
+                            } else if py >= layout.title_bar_h && py < layout.separator_y {
+                                focus = ContentView::Filesystem;
+                                ui_dirty = true;
+                            }
+                        }
+                        if state == 1 && button == BTN_LEFT {
                             if let Some(index) = entry_index_from_pointer(
                                 pointer_x,
                                 pointer_y,
-                                width,
+                                &layout,
                                 browser_selected,
                                 file_browser.entries().len(),
                             ) {
@@ -666,17 +754,23 @@ fn main() -> Result<(), String> {
                         }
 
                         if key == KEYSYM_F7 {
-                            browser_active = !browser_active;
-                            browser_message = if browser_active {
-                                "Browser active".to_string()
-                            } else {
-                                "Browser hidden".to_string()
+                            focus = match focus {
+                                ContentView::Terminal => ContentView::Filesystem,
+                                ContentView::Filesystem => ContentView::Terminal,
+                            };
+                            browser_message = match focus {
+                                ContentView::Filesystem => {
+                                    "Focus: Files — F7 or Terminal tab for shell".to_string()
+                                }
+                                ContentView::Terminal => {
+                                    "Focus: Terminal — F7 or Files tab for explorer".to_string()
+                                }
                             };
                             ui_dirty = true;
                             continue;
                         }
 
-                        if browser_active {
+                        if focus == ContentView::Filesystem {
                             let entry_count = file_browser.entries().len();
                             if entry_count > 0 {
                                 if key == KEYSYM_UP {
@@ -726,12 +820,16 @@ fn main() -> Result<(), String> {
                                     continue;
                                 }
                             }
+                            if key == KEYSYM_F6 {
+                                file_browser.toggle_view_mode();
+                                browser_selected = 0;
+                                ui_dirty = true;
+                                continue;
+                            }
+                            continue;
                         }
 
-                        if key == KEYSYM_F6 {
-                            file_browser.toggle_view_mode();
-                            browser_selected = 0;
-                            ui_dirty = true;
+                        if focus != ContentView::Terminal {
                             continue;
                         }
 
@@ -791,10 +889,15 @@ fn main() -> Result<(), String> {
                     &screen,
                     &mut window,
                     &file_browser,
-                    browser_active,
+                    width,
+                    height,
+                    cols,
+                    focus,
                     browser_selected,
                     &browser_message,
                     &ghost_suffix,
+                    client_title_bar,
+                    status_bar_enabled,
                 )
                 .map_err(|e| format!("Render failed: {}", e))?;
                 update_status_title(&mut window, &file_browser, &screen);
@@ -805,7 +908,8 @@ fn main() -> Result<(), String> {
                     width = new_w;
                     height = new_h;
                     cols = (width as usize) / FONT_WIDTH;
-                    rows = (height as usize) / FONT_HEIGHT;
+                    layout = SplitLayout::compute(width, height, cols, client_title_bar);
+                    rows = layout.terminal_rows.max(1) as usize;
                     screen.resize(rows, cols);
                     renderer.resize(width as u32, height as u32);
                     pty.resize(rows as u16, cols as u16)
@@ -815,10 +919,15 @@ fn main() -> Result<(), String> {
                         &screen,
                         &mut window,
                         &file_browser,
-                        browser_active,
+                        width,
+                        height,
+                        cols,
+                        focus,
                         browser_selected,
                         &browser_message,
                         &ghost_suffix,
+                        client_title_bar,
+                        status_bar_enabled,
                     )
                     .map_err(|e| format!("Render failed: {}", e))?;
                     update_status_title(&mut window, &file_browser, &screen);
@@ -827,6 +936,7 @@ fn main() -> Result<(), String> {
         }
     }
 
+    // Shell exited (PTY read returned 0); same teardown expectations as title-bar close.
     let _ = pty.wait();
     Ok(())
 }

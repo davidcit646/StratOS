@@ -1,6 +1,6 @@
 # stratvm / stratwm (human guide)
 
-**stratvm** is the in-tree **Wayland compositor**; the built binary is typically named `**stratwm`**. It uses **wlroots** for rendering and input, talks to the kernel via **libinput** and/or a **direct evdev** path for QEMU, and exposes a small **Unix socket IPC** for the panel and tools.
+**stratvm** is the in-tree **Wayland compositor**; the built binary is typically named `**stratwm`**. It uses **wlroots** for rendering and input, talks to the kernel via **libinput** and/or a **direct evdev** path when needed, and exposes a small **Unix socket IPC** for the panel and tools.
 
 ## User-visible behavior
 

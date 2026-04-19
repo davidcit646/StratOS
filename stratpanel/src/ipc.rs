@@ -1,8 +1,54 @@
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::io::{Write, BufRead, BufReader};
 
 pub struct IpcClient {
     stream: Option<BufReader<UnixStream>>,
+}
+
+/// Parse JSON objects for workspace entries returned by `stratvm` for `get workspaces`
+/// (`stratvm/src/main.c` `ipc_dispatch_command`). One-line response, newline-terminated:
+///
+/// `{"workspaces":[{"id":1,"name":"1","focused":true},...,{"id":9,"name":"9","focused":false}]}\n`
+///
+/// Indexing contract: `id` and `name` are **1-based** for humans; `switch_workspace N` uses the
+/// same `N` (`stratvm` subtracts 1 internally).
+fn parse_workspaces_payload(resp: &str) -> Vec<(u32, String, bool)> {
+    let s = resp.trim();
+    let Some(rest) = s.strip_prefix("{\"workspaces\":") else {
+        return vec![];
+    };
+    let rest = rest.trim_start();
+    let Some(inner) = rest.strip_prefix('[') else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    // Split on each workspace object opener; inner is like: [{"id":1,...},...]
+    for chunk in inner.split("{\"id\":").skip(1) {
+        // `1,"name":"1","focused":true},` or trailing `9,...}]`
+        let Some(comma) = chunk.find(',') else {
+            continue;
+        };
+        let Ok(id) = chunk[..comma].parse::<u32>() else {
+            continue;
+        };
+        let tail = &chunk[comma..];
+        let name = parse_json_string_field(tail, "\"name\":").unwrap_or_default();
+        let focused = tail.contains("\"focused\":true");
+        out.push((id, name, focused));
+    }
+    out
+}
+
+fn parse_json_string_field(haystack: &str, key: &str) -> Option<String> {
+    let i = haystack.find(key)?;
+    let mut s = &haystack[i + key.len()..];
+    s = s.trim_start();
+    if !s.starts_with('"') {
+        return None;
+    }
+    s = &s[1..];
+    let end = s.find('"')?;
+    Some(s[..end].to_string())
 }
 
 impl IpcClient {
@@ -15,7 +61,10 @@ impl IpcClient {
 
     pub fn send(&mut self, cmd: &str) -> Option<String> {
         let reader = self.stream.as_mut()?;
-        reader.get_mut().write_all(format!("{}\n", cmd).as_bytes()).ok()?;
+        reader
+            .get_mut()
+            .write_all(format!("{}\n", cmd).as_bytes())
+            .ok()?;
         let mut response = String::new();
         reader.read_line(&mut response).ok()?;
         Some(response.trim().to_string())
@@ -26,40 +75,9 @@ impl IpcClient {
         self.send("ping").map(|r| r == "OK pong").unwrap_or(false)
     }
 
-    #[allow(dead_code)]
     pub fn get_workspaces(&mut self) -> Vec<(u32, String, bool)> {
         let resp = self.send("get workspaces").unwrap_or_default();
-        if !resp.starts_with("{\"workspaces\":") { return vec![]; }
-        
-        // Parse JSON-like: {"workspaces":[{"id":1,"name":"1","focused":true},...]}
-        let mut result = vec![];
-        let content = resp.strip_prefix("{\"workspaces\":").unwrap_or(&resp);
-        let content = content.strip_suffix("}").unwrap_or(content);
-        
-        // Split by },{ to get individual workspace entries
-        for entry in content.split("},{") {
-            let entry = entry.replace("[", "").replace("]", "").replace("{", "").replace("}", "");
-            let mut id: Option<u32> = None;
-            let mut name: String = String::new();
-            let mut focused: bool = false;
-            
-            for part in entry.split(",") {
-                let part = part.trim();
-                if part.starts_with("\"id\":") {
-                    id = part[5..].parse().ok();
-                } else if part.starts_with("\"name\":") {
-                    let n = part[8..].trim_matches('"');
-                    name = n.to_string();
-                } else if part.starts_with("\"focused\":") {
-                    focused = part[10..].trim() == "true";
-                }
-            }
-            
-            if let Some(i) = id {
-                result.push((i, name, focused));
-            }
-        }
-        result
+        parse_workspaces_payload(&resp)
     }
 
     pub fn set_panel_autohide(&mut self, enabled: bool) -> bool {
@@ -67,7 +85,6 @@ impl IpcClient {
         self.send(&cmd).map(|r| r == "OK").unwrap_or(false)
     }
 
-    #[allow(dead_code)]
     pub fn switch_workspace(&mut self, id: u32) -> bool {
         let cmd = format!("switch_workspace {}", id);
         self.send(&cmd).map(|r| r == "ok").unwrap_or(false)
@@ -79,8 +96,21 @@ impl IpcClient {
         self.send(&cmd).map(|r| r == "OK").unwrap_or(false)
     }
 
-    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         self.stream.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_workspaces_payload;
+
+    #[test]
+    fn parses_stratvm_line() {
+        let s = r#"{"workspaces":[{"id":1,"name":"1","focused":true},{"id":2,"name":"2","focused":false}]}"#;
+        let w = parse_workspaces_payload(s);
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[0], (1, "1".to_string(), true));
+        assert_eq!(w[1], (2, "2".to_string(), false));
     }
 }

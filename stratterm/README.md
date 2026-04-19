@@ -10,9 +10,12 @@
 
 ## File browser (explorer)
 
-- **`F7`** — toggle the right-side **browser / preview** overlay (works on top of the normal terminal).
-- **`F6`** — toggle listing mode (`flat` / `tree`) for status + state.
-- **Navigation:** `Up` / `Down` select rows; **`Left`** — parent directory when the overlay has focus; **`Enter`** — open by action policy; **`Space`** — expand/collapse in tree mode.
+The window has a **client-drawn title bar** (below the compositor’s own frame, if any): **Files** / **Terminal** tabs, decorative ` _ ` / `[]`, and a red **X** that exits Stratterm. Below the title, the **file explorer** (list + preview) occupies the **upper** band and the **PTY** (scrollback + shell) the **lower** band; a thin bar separates them. **Files** and **Terminal** on the title bar (or **`F7`**) switch **keyboard focus** (which pane receives typing and some shortcuts), not whether the panes are visible—both stay on screen.
+
+- **Title bar** — click **Files** or **Terminal** to move focus; click the upper or lower pane to do the same.
+- **`F7`** — toggle focus between **Files** (explorer) and **Terminal** (shell).
+- **`F6`** — (when Files has focus) toggle listing mode (`flat` / `tree`).
+- **Navigation:** `Up` / `Down` select rows; **`Left`** — parent directory when Files has focus; **`Enter`** — open by action policy; **`Space`** — expand/collapse in tree mode.
 - **Scripts:** two-step confirmation before run; paths passed to `sh` / `nano` / `xdg-open` with POSIX single-quoting (including embedded `'`).
 - **Safety / feedback:** unreadable files and directories show a message in the preview strip; `chmod +x` files without a known script extension are not opened from the browser (use the shell); symlinks are labeled in preview; listing I/O errors show as `List: …`.
 - **Mouse:** single-click select, double-click open/run, **wheel** scrolls selection when the pointer is over the browser column (list or preview); leaving the surface clears double-click pairing so the next click is never a stale “second click”.

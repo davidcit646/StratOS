@@ -6,7 +6,7 @@
 
 ---
 
-> **Where this file lives:** `docs/human/stratos-design.md`. Full documentation index: [../README.md](../README.md) (human vs agent layout). **Agent digest** (invariants, boot chain, § map, grep): [../agent/stratos-design.md](../agent/stratos-design.md).
+> **Where this file lives:** `docs/human/stratos-design.md`. Full documentation index: [../README.md](../README.md) (human vs agent layout). **Agent digest** (invariants, boot chain, section map, grep): [../agent/stratos-design.md](../agent/stratos-design.md).
 
 ## 1. PHILOSOPHY
 
@@ -1454,7 +1454,7 @@ Everything else — no guardrails. You opened the terminal. You know what you're
 ```
 Codex (code generation)
     ↓
-QEMU automated boot + test run
+Bare-metal / hardware bring-up validation
     ↓
 Opus (reasoning / spec validation)
     ↓
@@ -1473,7 +1473,7 @@ loop
 
 ### 16.3 Ground Truth
 
-QEMU with serial output piped to text. No component ships without a passing QEMU boot run. Automated regression suite. If QEMU doesn't boot, the code is wrong.
+Components are validated on **real UEFI hardware** (installed disk or live USB). Serial console output on bare metal is the practical ground truth for boot and bring-up.
 
 ---
 
@@ -1617,7 +1617,9 @@ The system-only reinstall is unique to Strat OS. No other OS can offer it becaus
 
 ### 17.9 ISO Build
 
-Built with **mkosi**. Target size under 2GB. Ventoy compatible.
+**Repository today:** **`scripts/build-live-iso.sh`** assembles a hybrid UEFI ISO with **xorriso**, **mtools**, and an embedded FAT ESP; outputs **`out/live/stratos-live.iso`** from existing **`out/phase3`**, **`out/phase4`**, **`out/phase7`** artifacts (see **`docs/human/live-iso.md`**). This satisfies the “one documented build command” goal without requiring a **mkosi** install on every dev machine.
+
+**Long-term target:** Built with **mkosi**. Target size under 2GB. Ventoy compatible.
 
 ```
 Contents:

@@ -5,7 +5,7 @@ StratOS does **not** ship a separate “Files” or Nautilus-style application. 
 ## What to use
 
 1. Run **Stratterm** (it is the main terminal in a normal StratOS session).
-2. Press **F7** to toggle the **in-terminal file browser** (list + preview strip, keyboard-first, optional mouse).
+2. The **title bar** and **`F7`** switch **focus** between the **explorer** (upper pane: list + preview) and the **shell** (lower pane). Both panes stay visible; only one receives keyboard input at a time. You can also click the upper or lower pane to move focus.
 3. For search / indexing behind completions and paths, see **[spotlite.md](spotlite.md)** (indexer lives in the same crate as Stratterm today).
 
 **Shortcuts and behavior** (authoritative, kept current with the code): **[../../stratterm/README.md](../../stratterm/README.md)** — read the “File browser” / overlay sections and the shortcut list.

@@ -6,7 +6,7 @@
 - `stratman/src/service.rs` — manifest parse, spawn, reap, namespaces.
 - `stratman/src/maint.rs` — idle maintenance queue.
 - `stratman/src/network.rs` — DHCP / interface logic; invoked via `--network`.
-- `stratman/manifests/*.toml` — `stratwm`, `strat-network`, `seatd`, maintenance tasks, etc.
+- `stratman/manifests/*.toml` — `stratwm`, `strat-wpa` (`wpa_supplicant`), `strat-network`, `seatd`, maintenance tasks, etc.
 
 ## Invariants
 
@@ -16,7 +16,7 @@
 
 ## Grep starters
 
-`rg "load_and_run_all|parse_manifest|strat-network" stratman`
+`rg "load_and_run_all|parse_manifest|strat-network|strat-wpa" stratman`
 
 ## Human doc
 

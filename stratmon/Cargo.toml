@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 stratsup = { path = "../stratsup" }
-nix = "0.29"
+nix = { version = "0.29", features = ["fs", "ioctl"] }
 sha2 = "0.10"
+ureq = { version = "2", features = ["tls"] }
 
 [profile.release]
 opt-level = "z"

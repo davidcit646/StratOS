@@ -100,11 +100,12 @@ struct stratwm_server {
     /* Optional `/config/strat/stratvm.conf` — titlebar / border padding (see stratwm_load_deco_config). */
     int deco_titlebar_h;
     int deco_border_pad;
+    /* `[chrome] decorations_enabled_default` in settings.toml / settings.d (stratwm_load_modular_chrome). */
+    bool default_decorations_visible;
 
     struct wlr_output_layout *output_layout;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
-    struct wlr_scene_rect *cursor_rect;  /* Basic cursor: white 12x18 rect */
 
     struct wl_list keyboards;
 
@@ -113,6 +114,7 @@ struct stratwm_server {
     struct wl_listener cursor_button;
     struct wl_listener cursor_axis;
     struct wl_listener cursor_frame;
+    struct wl_listener request_cursor;
 
     /* Tiling engine (Phase 8.2) */
     #define STRATWM_WORKSPACES 9

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Creates a GPT test disk for StratOS QEMU/dev builds.
+# Creates a GPT test disk for StratOS development builds (dd to USB/NVMe or attach on bare metal).
 #
 # Layout matches stratboot (partition.c names + stratboot.c GPT PARTUUID lookup) and
 # initramfs-init.c defaults (/dev/sda2 root EROFS, /dev/sda5/6/7 config/apps/home):

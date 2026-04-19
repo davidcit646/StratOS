@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -22,11 +23,13 @@
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <wlr/backend.h>
 #include <wlr/backend/multi.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_surface.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
@@ -125,6 +128,7 @@ static void set_view_decorations_visible(struct stratwm_view *view, bool visible
 static bool titlebar_context_region(struct stratwm_view *view, double vx, double vy);
 static void move_view_to_workspace(struct stratwm_server *server, struct stratwm_view *view, int new_id);
 static void stratwm_load_deco_config(struct stratwm_server *server);
+static void stratwm_load_modular_chrome(struct stratwm_server *server);
 static void stratwm_refresh_tiled_visibility(struct stratwm_server *server);
 
 static void spawn_terminal(void) {
@@ -166,6 +170,9 @@ static void spawn_autostart(const char *path, const char *wayland_display) {
         if (wayland_display != NULL && wayland_display[0] != '\0') {
             setenv("WAYLAND_DISPLAY", wayland_display, 1);
         }
+        if (getenv("XCURSOR_THEME") == NULL || getenv("XCURSOR_THEME")[0] == '\0') {
+            setenv("XCURSOR_THEME", "dmz-white", 1);
+        }
         setenv("XDG_RUNTIME_DIR", "/run", 1);
         setenv("PATH", "/bin:/usr/bin:/sbin:/usr/sbin", 1);
         setenv("SHELL", "/bin/sh", 1);
@@ -196,11 +203,61 @@ static void spawn_autostart(const char *path, const char *wayland_display) {
     }
 }
 
+/* From `/config/strat/stratvm-keybinds` (written by stratsettings save / strat-ui-config export-keybinds). */
+static uint32_t strat_kb_spotlite_mods = WLR_MODIFIER_LOGO;
+static xkb_keysym_t strat_kb_spotlite_sym = XKB_KEY_period;
+static uint32_t strat_kb_cycle_mods = WLR_MODIFIER_LOGO;
+static xkb_keysym_t strat_kb_cycle_sym = XKB_KEY_space;
+
+static void stratwm_load_keybinds(void) {
+    FILE *f = fopen("/config/strat/stratvm-keybinds", "r");
+    if (!f) {
+        return;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') {
+            continue;
+        }
+        char name[64];
+        unsigned long mods = 0;
+        unsigned long sym = 0;
+        if (sscanf(line, "%63s %lu %lu", name, &mods, &sym) < 3) {
+            continue;
+        }
+        if (strcmp(name, "spotlite") == 0) {
+            strat_kb_spotlite_mods = (uint32_t)mods;
+            strat_kb_spotlite_sym = (xkb_keysym_t)sym;
+        } else if (strcmp(name, "cycle_layout") == 0) {
+            strat_kb_cycle_mods = (uint32_t)mods;
+            strat_kb_cycle_sym = (xkb_keysym_t)sym;
+        }
+    }
+    fclose(f);
+}
+
+static void spawn_spotlite(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        setsid();
+        execl("/bin/spotlite", "spotlite", (char *)NULL);
+        execl("/usr/bin/spotlite", "spotlite", (char *)NULL);
+        _exit(127);
+    }
+}
+
 static struct stratwm_view *view_from_surface(struct stratwm_server *server,
     struct wlr_surface *surface) {
+    if (surface == NULL) {
+        return NULL;
+    }
+    struct wlr_surface *root = wlr_surface_get_root_surface(surface);
     struct stratwm_view *view;
     wl_list_for_each(view, &server->views, link) {
-        if (view->xdg_toplevel->base->surface == surface) {
+        if (view->xdg_toplevel->base->surface == root) {
             return view;
         }
     }
@@ -725,7 +782,7 @@ static void create_titlebar(struct stratwm_view *view) {
 
     /* Initial button positioning (will be updated when window sizes) */
     update_titlebar_buttons(view, 100);
-    set_view_decorations_visible(view, true);
+    set_view_decorations_visible(view, view->server->default_decorations_visible);
 }
 
 static void destroy_titlebar(struct stratwm_view *view) {
@@ -915,6 +972,141 @@ static void stratwm_load_deco_config(struct stratwm_server *server) {
         }
     }
     fclose(f);
+}
+
+#define STRATWM_SETTINGS_D_MAX 64
+
+static void stratwm_trim_inplace(char *s) {
+    char *p = s;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (p != s) {
+        memmove(s, p, strlen(p) + 1);
+    }
+    size_t len = strlen(s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r'
+            || s[len - 1] == '\n')) {
+        s[--len] = '\0';
+    }
+}
+
+static void stratwm_strip_hash_comment(char *line) {
+    char *h = strchr(line, '#');
+    if (h) {
+        *h = '\0';
+    }
+}
+
+static bool stratwm_parse_bool01(const char *v) {
+    char buf[48];
+    size_t i = 0;
+    while (*v == ' ' || *v == '\t') {
+        v++;
+    }
+    while (v[i] && i < sizeof(buf) - 1) {
+        buf[i] = v[i];
+        i++;
+    }
+    buf[i] = '\0';
+    stratwm_trim_inplace(buf);
+    if (strcasecmp(buf, "true") == 0 || strcmp(buf, "1") == 0 || strcasecmp(buf, "yes") == 0) {
+        return true;
+    }
+    if (strcasecmp(buf, "false") == 0 || strcmp(buf, "0") == 0 || strcasecmp(buf, "no") == 0) {
+        return false;
+    }
+    return true;
+}
+
+static void stratwm_apply_chrome_kv(struct stratwm_server *server, const char *key, const char *val) {
+    if (strcmp(key, "decoration_titlebar_height") == 0) {
+        int v = atoi(val);
+        if (v >= 12 && v <= 64) {
+            server->deco_titlebar_h = v;
+        }
+    } else if (strcmp(key, "border_pad") == 0) {
+        int v = atoi(val);
+        if (v >= 0 && v <= 12) {
+            server->deco_border_pad = v;
+        }
+    } else if (strcmp(key, "decorations_enabled_default") == 0) {
+        server->default_decorations_visible = stratwm_parse_bool01(val);
+    }
+}
+
+static void stratwm_parse_chrome_from_file(struct stratwm_server *server, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return;
+    }
+    char line[384];
+    bool in_chrome = false;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        stratwm_strip_hash_comment(line);
+        stratwm_trim_inplace(line);
+        if (line[0] == '\0') {
+            continue;
+        }
+        if (line[0] == '[') {
+            in_chrome = (strcmp(line, "[chrome]") == 0);
+            continue;
+        }
+        if (!in_chrome) {
+            continue;
+        }
+        char *eq = strchr(line, '=');
+        if (eq == NULL) {
+            continue;
+        }
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        stratwm_trim_inplace(key);
+        stratwm_trim_inplace(val);
+        if (key[0] == '\0') {
+            continue;
+        }
+        stratwm_apply_chrome_kv(server, key, val);
+    }
+    fclose(f);
+}
+
+static int stratwm_cmp_cstr(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void stratwm_load_modular_chrome(struct stratwm_server *server) {
+    stratwm_parse_chrome_from_file(server, "/config/strat/settings.toml");
+    DIR *d = opendir("/config/strat/settings.d");
+    if (d == NULL) {
+        return;
+    }
+    char *names[STRATWM_SETTINGS_D_MAX];
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && n < STRATWM_SETTINGS_D_MAX) {
+        const char *nm = de->d_name;
+        size_t len = strlen(nm);
+        if (len < 6 || strcmp(nm + len - 5, ".toml") != 0) {
+            continue;
+        }
+        char *copy = strdup(nm);
+        if (copy) {
+            names[n++] = copy;
+        }
+    }
+    closedir(d);
+    if (n == 0) {
+        return;
+    }
+    qsort(names, (size_t)n, sizeof(names[0]), stratwm_cmp_cstr);
+    for (int i = 0; i < n; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "/config/strat/settings.d/%s", names[i]);
+        stratwm_parse_chrome_from_file(server, path);
+        free(names[i]);
+    }
 }
 
 /* Layer shell handlers (Phase 24a) */
@@ -1390,6 +1582,7 @@ static void server_new_xdg_toplevel_notify(struct wl_listener *listener, void *d
     view->request_move.notify = view_request_move_notify;
     wl_signal_add(&xdg_toplevel->events.request_move, &view->request_move);
 
+    xdg_toplevel->base->data = view;
     wl_list_insert(&server->views, &view->link);
 }
 
@@ -1636,8 +1829,12 @@ static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
         return true;
     }
 
-    /* Cycle layout mode: Super+Space (BSP → Stack → Fullscreen → BSP) (Phase 8.6) */
-    if (super_pressed && sym == XKB_KEY_space) {
+    /* Spotlite overlay + layout cycle — keys from stratvm-keybinds (defaults: Super+period / Super+Space) */
+    if (modifiers == strat_kb_spotlite_mods && sym == strat_kb_spotlite_sym) {
+        spawn_spotlite();
+        return true;
+    }
+    if (modifiers == strat_kb_cycle_mods && sym == strat_kb_cycle_sym) {
         cycle_layout(server);
         return true;
     }
@@ -1737,6 +1934,95 @@ static void stratwm_apply_move_grab(struct stratwm_server *server) {
         server->grabbed_view->float_x, server->grabbed_view->float_y);
 }
 
+static struct wlr_surface *stratwm_surface_at_layout(struct stratwm_server *server,
+    double lx, double ly, double *sx, double *sy) {
+    struct wlr_scene_tree *stack[] = {
+        server->layers_overlay,
+        server->layers_top,
+        server->layers_normal,
+        server->layers_bottom,
+        server->layers_bg,
+    };
+    for (size_t i = 0; i < sizeof(stack) / sizeof(stack[0]); i++) {
+        struct wlr_scene_node *node = wlr_scene_node_at(
+            &stack[i]->node, lx, ly, sx, sy);
+        if (node == NULL) {
+            continue;
+        }
+        for (struct wlr_scene_node *n = node; n != NULL; n = n->parent) {
+            if (n->type == WLR_SCENE_NODE_SURFACE) {
+                struct wlr_scene_surface *ss = wlr_scene_surface_from_node(n);
+                return ss->surface;
+            }
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+static struct stratwm_view *stratwm_view_at_cursor(struct stratwm_server *server) {
+    double lx = server->cursor->x;
+    double ly = server->cursor->y;
+    double sx, sy;
+    struct wlr_surface *surf = stratwm_surface_at_layout(server, lx, ly, &sx, &sy);
+    if (surf != NULL) {
+        return view_from_surface(server, surf);
+    }
+
+    struct stratwm_view *v;
+    wl_list_for_each_reverse(v, &server->views, link) {
+        if (v->workspace_id != server->current_workspace) {
+            continue;
+        }
+        if (!wlr_scene_node_is_enabled(&v->scene_tree->node)) {
+            continue;
+        }
+        double view_x = lx - (double)v->scene_tree->node.x;
+        double view_y = ly - (double)v->scene_tree->node.y;
+        int th = v->server->deco_titlebar_h;
+        if (v->decorations_visible && v->titlebar_bg
+            && view_x >= 0 && view_x < v->xdg_toplevel->current.width
+            && view_y >= (double)-th && view_y < 0) {
+            return v;
+        }
+        if (point_in_titlebar_button(v->close_button, view_x, view_y)
+            || point_in_titlebar_button(v->max_button, view_x, view_y)
+            || point_in_titlebar_button(v->min_button, view_x, view_y)) {
+            return v;
+        }
+    }
+    return NULL;
+}
+
+static void stratwm_process_cursor_motion(struct stratwm_server *server, uint32_t time_msec) {
+    stratwm_apply_move_grab(server);
+    if (server->grabbed_view != NULL) {
+        return;
+    }
+
+    double lx = server->cursor->x;
+    double ly = server->cursor->y;
+    double sx, sy;
+    struct wlr_surface *surface = stratwm_surface_at_layout(server, lx, ly, &sx, &sy);
+
+    if (surface != NULL) {
+        wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+        wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+    } else {
+        wlr_seat_pointer_clear_focus(server->seat);
+        if (server->cursor_manager != NULL) {
+            wlr_xcursor_manager_set_cursor_image(server->cursor_manager,
+                "left_ptr", server->cursor);
+        }
+    }
+}
+
+static void seat_request_cursor_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_server *server = wl_container_of(listener, server, request_cursor);
+    struct wlr_seat_pointer_request_set_cursor_event *event = data;
+    wlr_cursor_set_surface(server->cursor, event->surface, event->hotspot_x, event->hotspot_y);
+}
+
 /* Compositor-side pointer grabs (titlebar) + libinput path; evdev reuses this. */
 static void stratwm_process_pointer_button(
     struct stratwm_server *server,
@@ -1751,8 +2037,8 @@ static void stratwm_process_pointer_button(
         return;
     }
 
-    if (state == WL_POINTER_BUTTON_STATE_PRESSED && server->focused_view) {
-        struct stratwm_view *view = server->focused_view;
+    struct stratwm_view *view = stratwm_view_at_cursor(server);
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED && view != NULL) {
         double cursor_x = server->cursor->x;
         double cursor_y = server->cursor->y;
 
@@ -1823,10 +2109,7 @@ static void cursor_motion_notify(struct wl_listener *listener, void *data) {
     struct wlr_pointer_motion_event *event = data;
 
     wlr_cursor_move(server->cursor, NULL, event->delta_x, event->delta_y);
-    stratwm_apply_move_grab(server);
-
-    wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
-        server->cursor->x, server->cursor->y);
+    stratwm_process_cursor_motion(server, event->time_msec);
 }
 
 static void cursor_motion_absolute_notify(struct wl_listener *listener, void *data) {
@@ -1834,9 +2117,7 @@ static void cursor_motion_absolute_notify(struct wl_listener *listener, void *da
     struct wlr_pointer_motion_absolute_event *event = data;
 
     wlr_cursor_warp_absolute(server->cursor, NULL, event->x, event->y);
-    stratwm_apply_move_grab(server);
-    wlr_seat_pointer_notify_motion(server->seat, event->time_msec,
-        server->cursor->x, server->cursor->y);
+    stratwm_process_cursor_motion(server, event->time_msec);
 }
 
 static void cursor_button_notify(struct wl_listener *listener, void *data) {
@@ -1993,6 +2274,9 @@ static void ipc_dispatch_command(struct stratwm_server *server, const char *cmd,
         } else {
             ipc_send(fd, "ERROR invalid workspace\n");
         }
+    } else if (strcmp(cmd, "reload_keybinds") == 0) {
+        stratwm_load_keybinds();
+        ipc_send(fd, "OK\n");
     } else if (strcmp(cmd, "trigger_coverflow") == 0) {
         ipc_send(fd, "OK\n"); // stub — Phase 25
     } else if (strncmp(cmd, "trigger_pivot_overlay ", 22) == 0) {
@@ -2105,7 +2389,10 @@ int main(void) {
 
     server.deco_titlebar_h = 24;
     server.deco_border_pad = 2;
+    server.default_decorations_visible = true;
     stratwm_load_deco_config(&server);
+    stratwm_load_modular_chrome(&server);
+    stratwm_load_keybinds();
 
     /* Guarantee VM boot even if the environment gets scrubbed */
     setenv("WLR_LIBINPUT_NO_DEVICES", "1", 1);
@@ -2158,29 +2445,30 @@ int main(void) {
     
     server.xdg_shell = wlr_xdg_shell_create(server.wl_display, 6);
     server.seat = wlr_seat_create(server.wl_display, "seat0");
+    server.request_cursor.notify = seat_request_cursor_notify;
+    wl_signal_add(&server.seat->events.request_set_cursor, &server.request_cursor);
 
     server.cursor = wlr_cursor_create();
     wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
-    server.cursor_manager = wlr_xcursor_manager_create(NULL, 24);
-    if (!server.cursor_manager) {
-        fprintf(stderr, "stratwm: failed to create cursor manager\n");
-    } else if (!wlr_xcursor_manager_load(server.cursor_manager, 1)) {
-        fprintf(stderr, "stratwm: failed to load cursor theme\n");
-    } else {
-        fprintf(stderr, "stratwm: cursor theme loaded\n");
+    {
+        const char *xc_theme = getenv("XCURSOR_THEME");
+        if (xc_theme == NULL || xc_theme[0] == '\0') {
+            xc_theme = "dmz-white";
+        }
+        server.cursor_manager = wlr_xcursor_manager_create(xc_theme, 24);
+        if (server.cursor_manager == NULL
+            || !wlr_xcursor_manager_load(server.cursor_manager, 1)) {
+            fprintf(stderr, "stratwm: cursor theme \"%s\" not found, trying default\n", xc_theme);
+            server.cursor_manager = wlr_xcursor_manager_create(NULL, 24);
+            if (server.cursor_manager != NULL) {
+                wlr_xcursor_manager_load(server.cursor_manager, 1);
+            }
+        }
+        if (server.cursor_manager != NULL) {
+            wlr_xcursor_manager_set_cursor_image(server.cursor_manager,
+                "left_ptr", server.cursor);
+        }
     }
-
-    /* Set default cursor image */
-    if (server.cursor_manager) {
-        wlr_cursor_set_xcursor(server.cursor, server.cursor_manager, "default");
-        fprintf(stderr, "stratwm: set default cursor\n");
-    }
-
-    /* Create basic cursor rect (white 12x18 rectangle) as fallback */
-    float cursor_color[4] = {1.0, 1.0, 1.0, 1.0};  /* White */
-    server.cursor_rect = wlr_scene_rect_create(&server.scene->tree, 12, 18, cursor_color);
-    wlr_scene_node_set_enabled(&server.cursor_rect->node, true);
-    fprintf(stderr, "stratwm: created cursor rect\n");
 
     server.cursor_motion.notify = cursor_motion_notify;
     wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
@@ -2236,6 +2524,7 @@ int main(void) {
     wl_list_remove(&server.cursor_button.link);
     wl_list_remove(&server.cursor_axis.link);
     wl_list_remove(&server.cursor_frame.link);
+    wl_list_remove(&server.request_cursor.link);
 
     ipc_finish(&server.ipc);
 
@@ -2462,15 +2751,7 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
 
                 /* Move the cursor directly (bypasses the cursor_motion_notify handler) */
                 wlr_cursor_move(dev->server->cursor, NULL, accum_dx, accum_dy);
-                stratwm_apply_move_grab(dev->server);
-                wlr_seat_pointer_notify_motion(dev->server->seat, motion.time_msec,
-                    dev->server->cursor->x, dev->server->cursor->y);
-
-                /* Update cursor rect position */
-                if (dev->server->cursor_rect) {
-                    wlr_scene_node_set_position(&dev->server->cursor_rect->node,
-                        (int)dev->server->cursor->x, (int)dev->server->cursor->y);
-                }
+                stratwm_process_cursor_motion(dev->server, motion.time_msec);
 
                 accum_dx = 0;
                 accum_dy = 0;
@@ -2480,12 +2761,13 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
 
         /* Handle keyboard events */
         if (dev->is_keyboard && ev.type == EV_KEY) {
-            /* Convert evdev keycode to libinput/Wayland keycode (offset by 8) */
-            uint32_t keycode = ev.code + 8;
+            /* wlroots seat keycode: Linux evdev code; xkb: evdev + 8 */
+            uint32_t wl_key = ev.code;
+            uint32_t xkb_key = ev.code + 8;
 
             struct wlr_keyboard_key_event key_event = {
                 .time_msec = ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000,
-                .keycode = keycode,
+                .keycode = wl_key,
                 .update_state = true,
                 .state = ev.value ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED
             };
@@ -2493,7 +2775,7 @@ static int evdev_device_event(int fd, uint32_t mask, void *data) {
             /* Update xkb state */
             if (dev->wlr.keyboard->xkb_state) {
                 xkb_state_update_key(dev->wlr.keyboard->xkb_state,
-                    keycode + 8, ev.value ? XKB_KEY_DOWN : XKB_KEY_UP);
+                    xkb_key, ev.value ? XKB_KEY_DOWN : XKB_KEY_UP);
             }
 
             wl_signal_emit(&dev->wlr.keyboard->events.key, &key_event);

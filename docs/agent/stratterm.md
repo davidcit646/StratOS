@@ -13,7 +13,7 @@
 
 ## Deps
 
-- `stratlayer` path dependency; `rusqlite` for indexer/frecency.
+- `stratlayer` path dependency; `stratsettings` for merged `settings.toml` fields; `rusqlite` for indexer/frecency.
 
 ## Human / crate README
 

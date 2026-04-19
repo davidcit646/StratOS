@@ -182,3 +182,11 @@ pub fn set_target_hash(hash: [u8; 32]) -> io::Result<()> {
 pub fn set_update_pending() -> io::Result<()> {
     write_u8(VAR_UPDATE_PENDING, 1)
 }
+
+/// Clears `STRAT_UPDATE_PENDING`, `STRAT_TARGET_SLOT`, and `STRAT_TARGET_HASH` (zeros).
+/// Matches `strat_slot_clear_update_request` in StratBoot.
+pub fn clear_update_request() -> io::Result<()> {
+    write_u8(VAR_UPDATE_PENDING, 0)?;
+    write_u8(VAR_TARGET_SLOT, 0)?;
+    set_target_hash([0u8; 32])
+}

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -168,6 +169,329 @@ const PEEK_H: u32 = 4;
 const BTN_LEFT: u32 = 0x110;
 /// `wl_pointer.axis` value 0 — vertical scroll.
 const AXIS_SCROLL_VERTICAL: u32 = 0;
+
+/// Workspace buttons shown in the panel (respects switcher enable, label mode, max visible).
+fn visible_workspaces(
+    raw: &[(u32, String, bool)],
+    panel_cfg: &config::PanelConfig,
+) -> Vec<(u32, String, bool)> {
+    if !panel_cfg.workspace.enabled {
+        return Vec::new();
+    }
+    let cap = if panel_cfg.workspace.max_visible > 0 {
+        panel_cfg.workspace.max_visible as usize
+    } else {
+        raw.len()
+    };
+    let slice: Vec<_> = raw.iter().take(cap).cloned().collect();
+    if panel_cfg.workspace.show_labels {
+        slice
+    } else {
+        slice
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, _name, focused))| (id, format!("{}", i + 1), focused))
+            .collect()
+    }
+}
+
+/// Geometry for the visible top bar (shared by draw + pointer handlers).
+struct TopBarLayout {
+    input_x: i32,
+    input_w: i32,
+    tray_slot: i32,
+    clock_x: i32,
+    tray_x: i32,
+    pinned_x: i32,
+    pinned_max_w: i32,
+    pin_cell: i32,
+    pin_gap: i32,
+    btn_w: i32,
+    ws_start_x: i32,
+}
+
+impl TopBarLayout {
+    fn compute(
+        panel_width: i32,
+        clock_text: &str,
+        ws_count: usize,
+        config: &config::PanelConfig,
+    ) -> Self {
+        let input_x = 8i32;
+        let input_w = 200i32;
+        let pinned_left = input_x + input_w + 8;
+        let clock_tw = clock_text.len() as i32 * 6;
+        let tray_slot = 22i32;
+        let tray_n = [
+            config.tray.show_network,
+            config.tray.show_volume,
+            config.tray.show_updates,
+            config.tray.show_battery,
+        ]
+        .iter()
+        .filter(|&&x| x)
+        .count() as i32;
+        let tray_w = if tray_n > 0 {
+            tray_n * tray_slot + 4
+        } else {
+            0i32
+        };
+        let clock_x = panel_width - clock_tw - 8;
+        let tray_x = clock_x - 8 - tray_w;
+        let pinned_x = pinned_left;
+        let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
+        let pin_cell = 32i32;
+        let pin_gap = 4i32;
+        let btn_w = 40i32;
+        let ws_total = ws_count as i32 * (btn_w + 4);
+        let ws_start_x = (panel_width - ws_total) / 2;
+        Self {
+            input_x,
+            input_w,
+            tray_slot,
+            clock_x,
+            tray_x,
+            pinned_x,
+            pinned_max_w,
+            pin_cell,
+            pin_gap,
+            btn_w,
+            ws_start_x,
+        }
+    }
+
+    /// X and width of the volume tray cell (`[tray] show_volume`), matching draw order: N, V, U, B.
+    fn volume_cell_bounds(&self, cfg: &config::PanelConfig) -> Option<(i32, i32)> {
+        if !cfg.tray.show_volume {
+            return None;
+        }
+        let mut tx = self.tray_x;
+        if cfg.tray.show_network {
+            tx += self.tray_slot;
+        }
+        Some((tx, self.tray_slot - 2))
+    }
+}
+
+fn pointer_in_tray_volume_cell(
+    px: i32,
+    py: i32,
+    vis_h: i32,
+    layout: &TopBarLayout,
+    cfg: &config::PanelConfig,
+) -> bool {
+    if py < 2 || py >= vis_h - 2 {
+        return false;
+    }
+    let Some((vx, w)) = layout.volume_cell_bounds(cfg) else {
+        return false;
+    };
+    px >= vx && px < vx + w
+}
+
+/// Kernel `operstate` for the tray network icon (any non-`lo` iface may satisfy “connected”).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NetworkTrayState {
+    Connected,
+    Disconnected,
+    Unknown,
+}
+
+fn tray_network_state() -> NetworkTrayState {
+    let mut names: Vec<String> = match fs::read_dir("/sys/class/net") {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "lo")
+            .collect(),
+        Err(_) => return NetworkTrayState::Unknown,
+    };
+    if names.is_empty() {
+        return NetworkTrayState::Unknown;
+    }
+    names.sort();
+    let mut any_up = false;
+    let mut any_oper = false;
+    for n in &names {
+        let path = format!("/sys/class/net/{}/operstate", n);
+        if let Ok(s) = fs::read_to_string(&path) {
+            any_oper = true;
+            if s.trim() == "up" {
+                any_up = true;
+            }
+        }
+    }
+    if any_up {
+        NetworkTrayState::Connected
+    } else if any_oper {
+        NetworkTrayState::Disconnected
+    } else {
+        NetworkTrayState::Unknown
+    }
+}
+
+/// Signal-bar style icon (14×10), centered in the tray cell.
+fn draw_network_icon(
+    buf: &mut [u8],
+    stride: u32,
+    panel_width: i32,
+    panel_height: i32,
+    cell_left: i32,
+    cell_w: i32,
+    vis_h: i32,
+    state: NetworkTrayState,
+    live: u32,
+    stub: u32,
+) {
+    const ICON_W: i32 = 14;
+    const ICON_H: i32 = 10;
+    let content_h = vis_h - 4;
+    let ox = cell_left + (cell_w - ICON_W) / 2;
+    let oy = 2 + (content_h - ICON_H) / 2;
+    match state {
+        NetworkTrayState::Unknown => {
+            let tx = ox + (ICON_W - 6) / 2;
+            let ty = oy + (ICON_H - 7) / 2;
+            draw_text(buf, stride, panel_width, panel_height, tx, ty, "?", stub);
+        }
+        NetworkTrayState::Connected => {
+            let bar_w = 2i32;
+            let gap = 2i32;
+            let heights = [3i32, 5, 7, 9];
+            let base = oy + ICON_H;
+            for (i, h) in heights.iter().enumerate() {
+                let bx = ox + i as i32 * (bar_w + gap);
+                let by = base - *h;
+                fill_rect(
+                    buf,
+                    stride,
+                    panel_width,
+                    panel_height,
+                    bx,
+                    by,
+                    bar_w,
+                    *h,
+                    live,
+                );
+            }
+        }
+        NetworkTrayState::Disconnected => {
+            let bar_w = 2i32;
+            let gap = 2i32;
+            let h = 3i32;
+            let base = oy + ICON_H;
+            for i in 0..4i32 {
+                let bx = ox + i * (bar_w + gap);
+                let by = base - h;
+                fill_rect(
+                    buf,
+                    stride,
+                    panel_width,
+                    panel_height,
+                    bx,
+                    by,
+                    bar_w,
+                    h,
+                    stub,
+                );
+            }
+        }
+    }
+}
+
+fn tray_battery_label() -> String {
+    if let Ok(rd) = fs::read_dir("/sys/class/power_supply") {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let n = name.to_string_lossy();
+            if !n.starts_with("BAT") {
+                continue;
+            }
+            let path = format!("/sys/class/power_supply/{}/status", n);
+            if let Ok(s) = fs::read_to_string(&path) {
+                let t = s.trim();
+                let tag = if t == "Charging" || t == "Full" {
+                    "+"
+                } else if t == "Discharging" {
+                    "-"
+                } else {
+                    "~"
+                };
+                return format!("B{tag}");
+            }
+        }
+    }
+    "B~".to_string()
+}
+
+/// ALSA **Master** via `amixer` (alsa-utils). Label: `Vm` = muted, `V00`–`V99` = unmuted %, `V~` = no backend.
+fn tray_volume_label() -> String {
+    let Ok(output) = Command::new("amixer").args(["-M", "get", "Master"]).output() else {
+        return "V~".to_string();
+    };
+    if !output.status.success() {
+        return "V~".to_string();
+    }
+    let s = String::from_utf8_lossy(&output.stdout);
+    format_volume_from_amixer(&s)
+}
+
+fn format_volume_from_amixer(s: &str) -> String {
+    let (muted, pct) = parse_amixer_master(s);
+    if muted {
+        return "Vm".to_string();
+    }
+    if let Some(p) = pct {
+        return format!("V{:02}", p.min(99));
+    }
+    "V~".to_string()
+}
+
+fn parse_amixer_master(s: &str) -> (bool, Option<u8>) {
+    let mut muted = false;
+    let mut pct: Option<u8> = None;
+    for line in s.lines() {
+        if !line.contains("Playback") && !line.contains("Mono:") {
+            continue;
+        }
+        for tok in line.split_whitespace() {
+            if tok == "[off]" {
+                muted = true;
+            }
+            if tok.starts_with('[') && tok.ends_with(']') && tok.contains('%') {
+                let inner = &tok[1..tok.len() - 1];
+                if let Some(num) = inner.strip_suffix('%') {
+                    if let Ok(p) = num.parse::<u8>() {
+                        pct = Some(p);
+                    }
+                }
+            }
+        }
+    }
+    (muted, pct)
+}
+
+fn volume_toggle_mute() {
+    let _ = Command::new("amixer")
+        .args(["-q", "-M", "set", "Master", "toggle"])
+        .status();
+}
+
+/// Relative volume change using `amixer` percent steps (`3%+` / `3%-`).
+fn volume_nudge_by_percent(delta: i32) {
+    let d = delta.clamp(-10, 10);
+    if d == 0 {
+        return;
+    }
+    let arg = if d > 0 {
+        format!("{}%+", d)
+    } else {
+        format!("{}%-", -d)
+    };
+    let _ = Command::new("amixer")
+        .args(["-q", "-M", "set", "Master", &arg])
+        .status();
+}
 
 fn launcher_label(path: &str) -> String {
     Path::new(path)
@@ -385,11 +709,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Initialize clock
+    // Initialize clock + workspaces (avoid empty clock until first 1s tick).
     let mut clock = clock::Clock::new();
+    clock.tick(&config.clock.format, config.clock.show_date);
+    let mut last_clock_text = clock.text().to_string();
 
-    // Initialize workspace state
-    let mut workspaces: Vec<(u32, String, bool)> = vec![];
+    let mut workspaces_raw: Vec<(u32, String, bool)> = if config.workspace.enabled {
+        ipc.get_workspaces()
+    } else {
+        vec![]
+    };
+    let mut workspaces = visible_workspaces(&workspaces_raw, &config);
+    let mut tray_net_state = tray_network_state();
+    let mut tray_vol_lbl = tray_volume_label();
+    let mut tray_bat_lbl = tray_battery_label();
+    let mut last_clock_tick = Instant::now();
     let mut last_workspace_fetch = Instant::now();
 
     // Initialize pointer state
@@ -411,22 +745,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut autohide_collapse_at: Option<Instant> = None;
 
     // Track last rendered state to avoid unnecessary commits
-    let mut last_clock_text = String::new();
     let mut needs_commit = true; // Initial render
     let mut last_configure_serial: u32 = 0;
 
     // Step 9: Main event loop
     loop {
-        // Fetch workspaces and update clock once per second
-        if last_workspace_fetch.elapsed() >= Duration::from_secs(1) {
-            workspaces = ipc.get_workspaces();
+        if last_clock_tick.elapsed() >= Duration::from_secs(1) {
+            tray_net_state = tray_network_state();
+            tray_vol_lbl = tray_volume_label();
+            tray_bat_lbl = tray_battery_label();
             clock.tick(&config.clock.format, config.clock.show_date);
             let clock_text = clock.text();
             if clock_text != last_clock_text {
                 last_clock_text = clock_text.to_string();
             }
+            last_clock_tick = Instant::now();
+            needs_commit = true;
+        }
+        let ws_secs = config.workspace.poll_interval_secs.max(1);
+        if config.workspace.enabled
+            && last_workspace_fetch.elapsed() >= Duration::from_secs(ws_secs)
+        {
+            workspaces_raw = ipc.get_workspaces();
+            workspaces = visible_workspaces(&workspaces_raw, &config);
             last_workspace_fetch = Instant::now();
-            needs_commit = true; // Clock or workspace state changed
+            needs_commit = true;
         }
 
         // Blink cursor
@@ -473,15 +816,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let accent = ((config.panel.opacity * 255.0) as u32) << 24 | 0x5B9BD5;
                 fill_rect(data, stride, panel_width as i32, ph, 0, 0, panel_width as i32, vis_h, accent);
             } else {
-                let input_x = 8i32;
+                let layout = TopBarLayout::compute(
+                    panel_width as i32,
+                    &last_clock_text,
+                    workspaces.len(),
+                    &config,
+                );
                 let input_y = 2i32;
-                let input_w = 200i32;
                 let input_h = vis_h - 4;
 
                 {
                     let data = shm_buffer.data_mut();
                     let input_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B;
-                    fill_rect(data, stride, panel_width as i32, ph, input_x, input_y, input_w, input_h, input_bg);
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        layout.input_x,
+                        input_y,
+                        layout.input_w,
+                        input_h,
+                        input_bg,
+                    );
 
                     let display_text = text_input.display_text();
                     let text_y = input_y + (input_h - 7) / 2;
@@ -490,42 +847,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         stride,
                         panel_width as i32,
                         ph,
-                        input_x + 4,
+                        layout.input_x + 4,
                         text_y,
                         &display_text,
                         0xFFFFFFFF,
                     );
 
                     if keyboard_focused && cursor_visible {
-                        let cursor_x = input_x + 4 + text_input.cursor_pixel_offset();
+                        let cursor_x = layout.input_x + 4 + text_input.cursor_pixel_offset();
                         fill_rect(data, stride, panel_width as i32, ph, cursor_x, text_y, 1, 9, 0xFFFFFFFF);
                     }
                 }
 
-                let clock_tw = last_clock_text.len() as i32 * 6;
-                let clock_x = panel_width as i32 - clock_tw - 8;
-                let tray_slot = 22i32;
-                let tray_w = tray_slot * 4 + 4;
-                let tray_x = clock_x - 8 - tray_w;
-
-                let pinned_x = input_x + input_w + 8;
-                let pin_cell = 32i32;
-                let pin_gap = 4i32;
                 let pins_content = if config.pinned.apps.is_empty() {
                     0i32
                 } else {
-                    config.pinned.apps.len() as i32 * (pin_cell + pin_gap) - pin_gap
+                    config.pinned.apps.len() as i32 * (layout.pin_cell + layout.pin_gap)
+                        - layout.pin_gap
                 };
-                let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
+                let pinned_max_w = layout.pinned_max_w;
                 let max_scroll = (pins_content - pinned_max_w).max(0);
                 pinned_scroll = pinned_scroll.clamp(0, max_scroll);
 
+                // Pinned strip: click launches absolute paths to executables (`launch_detached`).
                 if pinned_max_w > 0 && !config.pinned.apps.is_empty() {
                     let data = shm_buffer.data_mut();
-                    let clip_r = pinned_x + pinned_max_w;
+                    let clip_r = layout.pinned_x + pinned_max_w;
                     for (i, app) in config.pinned.apps.iter().enumerate() {
-                        let bx = pinned_x + i as i32 * (pin_cell + pin_gap) - pinned_scroll;
-                        if bx + pin_cell < pinned_x || bx >= clip_r {
+                        let bx = layout.pinned_x
+                            + i as i32 * (layout.pin_cell + layout.pin_gap)
+                            - pinned_scroll;
+                        if bx + layout.pin_cell < layout.pinned_x || bx >= clip_r {
                             continue;
                         }
                         let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x252525;
@@ -536,84 +888,166 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ph,
                             bx,
                             2,
-                            pin_cell,
+                            layout.pin_cell,
                             vis_h - 4,
                             cell_bg,
                         );
                         let label = launcher_label(app);
-                        let tx = bx + (pin_cell - label.len() as i32 * 6) / 2;
-                        draw_text(data, stride, panel_width as i32, ph, tx, (vis_h - 7) / 2, &label, 0xFFE0E0E0);
-                    }
-                }
-
-                let button_width = 40i32;
-                let button_height = vis_h - 4;
-                let total_width = workspaces.len() as i32 * (button_width + 4);
-                let start_x = (panel_width as i32 - total_width) / 2;
-                {
-                    let data = shm_buffer.data_mut();
-                    for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
-                        let bx = start_x + (i as i32 * (button_width + 4));
-                        let by = 2;
-                        let button_color = if *focused {
-                            ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
-                        } else {
-                            ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
-                        };
-                        fill_rect(
-                            data,
-                            stride,
-                            panel_width as i32,
-                            ph,
-                            bx,
-                            by,
-                            button_width,
-                            button_height,
-                            button_color,
-                        );
-                        let text_x = bx + (button_width - name.len() as i32 * 6) / 2;
-                        let text_y = by + (button_height - 7) / 2;
-                        draw_text(data, stride, panel_width as i32, ph, text_x, text_y, name, 0xFFFFFFFF);
-                    }
-                }
-
-                let stub = 0xFF666666u32;
-                let labels = [
-                    ("N", config.tray.show_network),
-                    ("V", config.tray.show_volume),
-                    ("U", config.tray.show_updates),
-                    ("B", config.tray.show_battery),
-                ];
-                {
-                    let data = shm_buffer.data_mut();
-                    for i in 0..4 {
-                        let (ch, enabled) = labels[i];
-                        let bx = tray_x + i as i32 * tray_slot;
-                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x151515;
-                        fill_rect(data, stride, panel_width as i32, ph, bx, 2, tray_slot - 2, vis_h - 4, cell_bg);
-                        let col = if enabled { stub } else { 0xFF444444 };
-                        let tag = if enabled {
-                            format!("{}~", ch)
-                        } else {
-                            format!("{}-", ch)
-                        };
+                        let tx = bx + (layout.pin_cell - label.len() as i32 * 6) / 2;
                         draw_text(
                             data,
                             stride,
                             panel_width as i32,
                             ph,
-                            bx + 4,
+                            tx,
                             (vis_h - 7) / 2,
-                            &tag,
+                            &label,
+                            0xFFE0E0E0,
+                        );
+                    }
+                }
+
+                let button_height = vis_h - 4;
+                {
+                    let data = shm_buffer.data_mut();
+                    if config.workspace.enabled {
+                        if workspaces.is_empty() {
+                            let hint = if ipc.is_connected() {
+                                "WS?"
+                            } else {
+                                "IPC"
+                            };
+                            draw_text(
+                                data,
+                                stride,
+                                panel_width as i32,
+                                ph,
+                                layout.ws_start_x.max(8),
+                                (vis_h - 7) / 2,
+                                hint,
+                                0xFF666666,
+                            );
+                        } else {
+                            for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
+                            let bx =
+                                layout.ws_start_x + (i as i32 * (layout.btn_w + 4));
+                            let by = 2;
+                            let button_color = if *focused {
+                                ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
+                            } else {
+                                ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
+                            };
+                            fill_rect(
+                                data,
+                                stride,
+                                panel_width as i32,
+                                ph,
+                                bx,
+                                by,
+                                layout.btn_w,
+                                button_height,
+                                button_color,
+                            );
+                            let text_x = bx + (layout.btn_w - name.len() as i32 * 6) / 2;
+                            let text_y = by + (button_height - 7) / 2;
+                            draw_text(
+                                data,
+                                stride,
+                                panel_width as i32,
+                                ph,
+                                text_x,
+                                text_y,
+                                name,
+                                0xFFFFFFFF,
+                            );
+                        }
+                        }
+                    }
+                }
+
+                let stub_col = 0xFF666666u32;
+                let live_col = 0xFF9BB9B9u32;
+                let tray_cells: [(bool, &str); 3] = [
+                    (config.tray.show_volume, tray_vol_lbl.as_str()),
+                    (config.tray.show_updates, "U~"),
+                    (config.tray.show_battery, tray_bat_lbl.as_str()),
+                ];
+                {
+                    let data = shm_buffer.data_mut();
+                    let mut tx = layout.tray_x;
+                    if config.tray.show_network {
+                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x151515;
+                        let cw = layout.tray_slot - 2;
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            tx,
+                            2,
+                            cw,
+                            vis_h - 4,
+                            cell_bg,
+                        );
+                        draw_network_icon(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            tx,
+                            cw,
+                            vis_h,
+                            tray_net_state,
+                            live_col,
+                            stub_col,
+                        );
+                        tx += layout.tray_slot;
+                    }
+                    for (show, label) in tray_cells {
+                        if !show {
+                            continue;
+                        }
+                        let stubby = label.ends_with('~') || label == "Vm";
+                        let col = if stubby { stub_col } else { live_col };
+                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x151515;
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            tx,
+                            2,
+                            layout.tray_slot - 2,
+                            vis_h - 4,
+                            cell_bg,
+                        );
+                        draw_text(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            tx + 4,
+                            (vis_h - 7) / 2,
+                            label,
                             col,
                         );
+                        tx += layout.tray_slot;
                     }
                 }
 
                 let clock_y = (vis_h - 7) / 2;
                 {
                     let data = shm_buffer.data_mut();
-                    draw_text(data, stride, panel_width as i32, ph, clock_x, clock_y, &last_clock_text, 0xFFFFFFFF);
+                    draw_text(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        layout.clock_x,
+                        clock_y,
+                        &last_clock_text,
+                        0xFFFFFFFF,
+                    );
                 }
             }
 
@@ -677,16 +1111,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if vis_h <= PEEK_H as i32 {
                         continue;
                     }
-                    let input_end = 8 + 200 + 8;
-                    let clock_tw = last_clock_text.len() as i32 * 6;
-                    let clock_x = panel_width as i32 - clock_tw - 8;
-                    let tray_w = 22 * 4 + 4;
-                    let tray_x = clock_x - 8 - tray_w;
-                    let pinned_x = input_end;
-                    let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
-                    if px >= pinned_x && px < pinned_x + pinned_max_w && py >= 2 && py < vis_h - 2 {
+                    let layout = TopBarLayout::compute(
+                        panel_width as i32,
+                        &last_clock_text,
+                        workspaces.len(),
+                        &config,
+                    );
+                    if px >= layout.pinned_x
+                        && px < layout.pinned_x + layout.pinned_max_w
+                        && py >= 2
+                        && py < vis_h - 2
+                    {
                         pinned_scroll -= (value * 24.0) as i32;
                         needs_commit = true;
+                    } else if pointer_in_tray_volume_cell(px, py, vis_h, &layout, &config) {
+                        // Wayland: positive axis value ≈ scroll down — invert so wheel-up increases volume.
+                        let step = (-value * 3.0).round() as i32;
+                        let step = step.clamp(-10, 10);
+                        if step != 0 {
+                            volume_nudge_by_percent(step);
+                            tray_vol_lbl = tray_volume_label();
+                            needs_commit = true;
+                        }
                     }
                 }
                 Event::PointerButton { button, state } => {
@@ -704,53 +1150,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         }
 
-                        if px >= 8 && px < 208 && py >= 2 && py < vis_h - 2 {
+                        let layout = TopBarLayout::compute(
+                            panel_width as i32,
+                            &last_clock_text,
+                            workspaces.len(),
+                            &config,
+                        );
+
+                        if px >= layout.input_x
+                            && px < layout.input_x + layout.input_w
+                            && py >= 2
+                            && py < vis_h - 2
+                        {
                             if !keyboard_focused {
                                 keyboard_focused = true;
                                 ls.set_keyboard_interactivity(1, client.socket());
                                 WlSurface::new(surface_id).commit(client.socket());
                             }
-                            text_input.click_at(px - 12);
+                            text_input.click_at(px - (layout.input_x + 4));
                         } else {
-                            let input_end = 8 + 200 + 8;
-                            let clock_tw = last_clock_text.len() as i32 * 6;
-                            let clock_x = panel_width as i32 - clock_tw - 8;
-                            let tray_slot = 22i32;
-                            let tray_w = tray_slot * 4 + 4;
-                            let tray_x = clock_x - 8 - tray_w;
-                            let pinned_x = input_end;
-                            let pin_cell = 32i32;
-                            let pin_gap = 4i32;
-                            let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
-                            let pins_content = if config.pinned.apps.is_empty() {
-                                0i32
+                            let on_vol = pointer_in_tray_volume_cell(px, py, vis_h, &layout, &config);
+                            if on_vol {
+                                volume_toggle_mute();
+                                tray_vol_lbl = tray_volume_label();
+                                needs_commit = true;
                             } else {
-                                config.pinned.apps.len() as i32 * (pin_cell + pin_gap) - pin_gap
-                            };
-                            let max_scroll = (pins_content - pinned_max_w).max(0);
-                            let scroll = pinned_scroll.clamp(0, max_scroll);
+                                let pins_content = if config.pinned.apps.is_empty() {
+                                    0i32
+                                } else {
+                                    config.pinned.apps.len() as i32 * (layout.pin_cell + layout.pin_gap)
+                                        - layout.pin_gap
+                                };
+                                let max_scroll = (pins_content - layout.pinned_max_w).max(0);
+                                let scroll = pinned_scroll.clamp(0, max_scroll);
 
-                            if pinned_max_w > 0 && py >= 2 && py < vis_h - 2 {
-                                for (i, app) in config.pinned.apps.iter().enumerate() {
-                                    let bx = pinned_x + i as i32 * (pin_cell + pin_gap) - scroll;
-                                    if bx + pin_cell < pinned_x || bx >= pinned_x + pinned_max_w {
-                                        continue;
-                                    }
-                                    if px >= bx && px < bx + pin_cell {
-                                        launch_detached(app);
-                                        break;
+                                if layout.pinned_max_w > 0 && py >= 2 && py < vis_h - 2 {
+                                    for (i, app) in config.pinned.apps.iter().enumerate() {
+                                        let bx = layout.pinned_x
+                                            + i as i32 * (layout.pin_cell + layout.pin_gap)
+                                            - scroll;
+                                        if bx + layout.pin_cell < layout.pinned_x
+                                            || bx >= layout.pinned_x + layout.pinned_max_w
+                                        {
+                                            continue;
+                                        }
+                                        if px >= bx && px < bx + layout.pin_cell {
+                                            launch_detached(app);
+                                            break;
+                                        }
                                     }
                                 }
-                            }
 
-                            let btn_w = 40i32;
-                            let total_w = workspaces.len() as i32 * (btn_w + 4);
-                            let start_x = (panel_width as i32 - total_w) / 2;
-                            for (i, (id, _, _)) in workspaces.iter().enumerate() {
-                                let bx = start_x + i as i32 * (btn_w + 4);
-                                if px >= bx && px < bx + btn_w && py >= 2 && py < vis_h - 2 {
-                                    ipc.switch_workspace(*id);
-                                    break;
+                                for (i, (id, _, _)) in workspaces.iter().enumerate() {
+                                    let bx = layout.ws_start_x + i as i32 * (layout.btn_w + 4);
+                                    if px >= bx
+                                        && px < bx + layout.btn_w
+                                        && py >= 2
+                                        && py < vis_h - 2
+                                    {
+                                        ipc.switch_workspace(*id);
+                                        workspaces_raw = ipc.get_workspaces();
+                                        workspaces = visible_workspaces(&workspaces_raw, &config);
+                                        needs_commit = true;
+                                        break;
+                                    }
                                 }
                             }
                             if keyboard_focused {
@@ -774,5 +1237,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tray_volume_tests {
+    use super::format_volume_from_amixer;
+    use super::parse_amixer_master;
+
+    #[test]
+    fn parses_master_percent_and_mute() {
+        let s = r"Simple mixer control 'Master',0
+  Front Left: Playback 39322 [60%] [on]";
+        let (muted, pct) = parse_amixer_master(s);
+        assert!(!muted);
+        assert_eq!(pct, Some(60));
+
+        let m = r"  Front Left: Playback 0 [0%] [off]";
+        let (muted2, _) = parse_amixer_master(m);
+        assert!(muted2);
+        assert_eq!(format_volume_from_amixer(m), "Vm");
     }
 }

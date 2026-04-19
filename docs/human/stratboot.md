@@ -14,7 +14,11 @@
 2. StratBoot picks a slot, builds `root=PARTUUID=…` for the **EROFS** system partition, and starts the Linux image.
 3. Linux runs **initramfs** (`sysroot/initramfs-init.c`), which mounts the rest and execs **stratman**.
 
-Disk images for QEMU are built with `scripts/create-test-disk.sh` and populated by `scripts/update-test-disk.sh` (see root [README.md](../../README.md)).
+GPT disk images for development and flashing are built with `scripts/create-test-disk.sh` and populated by `scripts/update-test-disk.sh` (see root [README.md](../../README.md)).
+
+## Secure Boot
+
+StratBoot is built as a normal **unsigned** UEFI application (`BOOTX64.EFI`). That does not fail the build, but firmware with **Secure Boot** on often **refuses to start** an unsigned bootloader. For development and bare-metal testing, **disable Secure Boot** in firmware (or use a machine without it). A signing and **shim** story is future work. The same limitation applies to the live ISO and installed ESP; see [live-iso.md](live-iso.md#secure-boot).
 
 ## Agent-oriented companion
 

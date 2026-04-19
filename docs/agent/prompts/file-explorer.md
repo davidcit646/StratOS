@@ -8,7 +8,7 @@ Copy everything below the line into a new agent chat (or Cursor agent) as the **
 
 StratOS has **no standalone file manager application**. The **in-terminal file browser** lives in **stratterm**: a keyboard-first overlay (**`F7`**) with optional mouse, directory listing, preview classification, flat/tree modes, and script run confirmation. Indexing and frecency live in **`stratterm-indexer`** (SQLite) and **`strat-settings`** (TOML for `/config/strat/indexer.conf`).
 
-**Authoritative specs:** `docs/human/stratos-design.md` (filesystem honesty, §3.4–3.5), `docs/human/runtime-persistence-contract.md`, `docs/human/application-config-resolution.md`, `docs/human/coding-checklist.md` (Phase **11** terminal, Phase **12** Spotlite / browser / indexer).
+**Authoritative specs:** `docs/human/stratos-design.md` (filesystem honesty, sections **3.4–3.5**), `docs/human/runtime-persistence-contract.md`, `docs/human/application-config-resolution.md`, `docs/human/coding-checklist.md` (Phase **11** terminal, Phase **12** Spotlite / browser / indexer).
 
 **Agent briefs:** `docs/agent/stratos-design.md`, `docs/agent/stratterm.md`, `docs/agent/spotlite.md`.
 
@@ -76,7 +76,7 @@ Pick items that match `stratterm/README.md` “Not complete yet” and Phase **1
 
 1. **`docs/human/coding-checklist.md`:** adjust Phase **11** / **12** notes or checkboxes only where your work changes facts; add a short deferral note for anything pushed to a follow-up.
 2. **Build:** `make -C stratterm build` (or project-standard equivalent) succeeds.
-3. **Manual sanity:** run stratterm (host or QEMU per your setup); exercise `F7`, navigation, and at least one **script** and one **non-script** open path.
+3. **Manual sanity:** run stratterm on target hardware; exercise `F7`, navigation, and at least one **script** and one **non-script** open path.
 4. **PR / summary:** list files touched, UX decisions, and any new config keys with an example snippet.
 
 ---

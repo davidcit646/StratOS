@@ -1,6 +1,8 @@
 > **StratOS coding checklist.** Testing lives elsewhere. **Custom first:** prefer in-tree code over new dependencies.  
 > **Phase IDs are stable** for logs and PRs. **Body order** matches boot dependency: **1–7**, then **12b**, then **8–20**, **22–23**, **24a–26**. Phases **21** and **27+** are unused / reserved.  
 > *Each line below is a checkbox item only (`[x]` done, `[ ]` not done). Path hints sit in the item text.*
+>
+> **Repo audit (2026-04-18):** Panel Phase 24 matches `stratpanel` + `stratvm` IPC; Phase 25 Cover Flow / Super+Tab claims corrected. **Update path (2026-04-18 follow-up):** `efi_main` calls `strat_slot_process_update_request` when not on live medium; `stratmon --stage-update` sets `STRAT_TARGET_*` + `STRAT_UPDATE_PENDING=1` and supports `https://` URLs (`ureq`). **Config (2026-04-18):** `stratsettings` + **`stratos-settings`** / **`strat-ui-config`** are in-tree; panel reads merged TOML (`StratSettings`). **CI:** `.github/workflows/stratos-ci.yml` (build + live ISO).
 
 ---
 
@@ -43,7 +45,7 @@
 ## Phase 1: Toolchain & build system
 
 - EROFS system image in build pipeline (`build-all-and-run.sh` → `mkfs.erofs`, `out/phase7/`)
-- Rust workspace components (`stratman/`, `stratpanel/`, `stratterm/`, `stratmon/`, `stratlayer/`, `stratsup/`)
+- Rust workspace components (`stratman/`, `stratpanel/`, `stratterm/`, `stratsettings/`, `stratmon/`, `stratlayer/`, `stratsup/`)
 - GPT test disk helpers (`scripts/create-test-disk.sh`, `scripts/update-test-disk.sh`)
 
 ## Phase 2: StratBoot (UEFI)
@@ -78,10 +80,10 @@
 
 ## Phase 7: Slot write logic (StratBoot surgeon)
 
-- Raw block I/O in StratBoot (`stratboot/src/` — `strat_slot_process_update_request` et al.)
+- Raw block I/O in StratBoot (`stratboot/src/partition.c`, SHA256 verify paths in `stratboot/src/sha256.c` et al.)
 - Pre-boot hash verification (`stratboot/src/sha256.c` + call sites)
 - Slot rotation / state machine (`stratboot/src/slot.c`)
-- StratBoot applies staged **UPDATE.MAN** on all production update paths (audit `stratboot.c` vs `stratmon` writer)
+- `[x]` **Pending-update activation:** `stratmon` writes `/EFI/STRAT/UPDATE.MAN`, `STRAT_TARGET_SLOT`, `STRAT_TARGET_HASH`, and `STRAT_UPDATE_PENDING=1` (`stratmon/src/main.rs`). `strat_slot_process_update_request` (`stratboot/src/slot.c`) runs from `efi_main` after live-medium detection (not on live ISO).
 
 ---
 
@@ -122,7 +124,7 @@
 - PTY + Wayland front end (`stratterm/src/pty.rs`, `wayland.rs`, `main.rs`)
 - Renderer + font path (`stratterm/src/renderer.rs`, `font.rs`)
 - Escape parser (`stratterm/src/parser.rs`)
-- File browser overlay keeps PTY input routing explicit; scrollback is unchanged under the Wayland-side panel (`renderer.rs` draws the overlay after the terminal buffer).
+- File browser UI (list + preview panes, F7 flows) keeps PTY input routing explicit; scrollback is unchanged; `renderer.rs` draws browser chrome after the terminal buffer (not a full-screen opaque overlay).
 
 ## Phase 12: Spotlite
 
@@ -142,16 +144,17 @@
 
 ## Phase 14: System configuration API
 
-- Hand-rolled TOML for panel (`stratpanel/src/config.rs`, `/config/strat/panel.conf`)
-- Hand-rolled TOML for indexer CLI (`stratterm/src/bin/strat-settings.rs`, `/config/strat/indexer.conf`)
-- Atomic system-wide config API for all subsystems under `/config`
-- General system preferences CLI (not indexer-only)
+- Merged modular settings (`stratsettings/src/lib.rs`, `/config/strat/settings.toml`, `settings.d/`, `stratsettings/defaults/settings.default.toml`); **stratpanel** / **stratman** / **stratterm** consume `StratSettings::load()`
+- Legacy **`panel.conf`** overlay for **`[panel]`** only when **`settings.toml` is absent** (`stratpanel/src/config.rs`)
+- Indexer flat file + legacy CLI (`stratterm/src/bin/strat-settings.rs`, `/config/strat/indexer.conf`); **`strat-ui-config`** / **`stratos-settings`** for merged tables
+- Atomic system-wide config API for all subsystems under `/config` (partial — many keys still land in hand-rolled files)
+- General system preferences beyond indexer-only (`stratos-settings` MVP; full “control center” still Phase **26** open work)
 
 ## Phase 15: Network stack (minimal)
 
 - `strat-network` stratman child (`stratman/src/network.rs`, `stratman/manifests/strat-network.toml`, `--network`)
 - DHCP client in-tree (`stratman/src/network.rs`)
-- StratMon HTTPS fetch + trust store for update payloads
+- `[x]` StratMon HTTPS fetch for update payloads (`--stage-update https://…` via `ureq` + webpki roots in `stratmon/src/main.rs`); `[ ]` custom CA bundle / pinned trust policy (enterprise still open)
 - Kernel drivers in `stratos-kernel/stratos.config` (virtio / common NICs as enabled)
 
 ## Phase 16: User session management
@@ -189,10 +192,12 @@
 
 ## Phase 22: Build system
 
-- `build-all-and-run.sh` (kernel, `stratboot`, `stratvm`, Rust bins, initramfs, rootfs, EROFS, disk, QEMU)
+- `build-all-and-run.sh` (kernel, `stratboot`, `stratvm`, `stratsettings`, Rust bins, initramfs, rootfs, EROFS, test disk image)
+- **CI:** `.github/workflows/stratos-ci.yml` — Ubuntu runner, `./build-all-and-run.sh` then `./scripts/build-live-iso.sh`, verifies `out/live/stratos-live.iso`
+- Live ISO pipeline: `scripts/build-live-iso.sh` → `out/live/stratos-live.iso` (see `docs/human/live-iso.md`)
+- Live → disk install: `scripts/strat-installer.sh` → `/bin/strat-installer` in rootfs; ISO9660 carries `slot-system.erofs`, `vmlinuz.efi`, `initramfs.img`, `BOOTX64.EFI` for the installer (full UI / preserve-data flows still Phase 17 open work; see `docs/human/live-iso.md`)
 - Default dev path uses `scripts/*.sh` only (no `scripts/phaseN/` tree required)
 - GCC15 kernel build shim when needed (`build-all-and-run.sh`)
-- QEMU logs `ide-logs/qemu_strattest.txt` + serial (`scripts/run-qemu.sh`, `SERIAL_LOG_PATH`)
 
 ## Phase 23: Cleanup & hardening
 
@@ -208,31 +213,32 @@
 ## Phase 24: Panel
 
 - Panel binary + `LAYER_TOP` (`stratpanel/src/main.rs`; `stratvm/src/main.c` `spawn_autostart("/bin/stratpanel", …)` — not a `stratman` manifest)
-- Pinned app strip UI (`pinned.apps` in `main.rs`: scroll wheel + click launch absolute paths)
-- Workspace switcher + IPC (`stratpanel/src/ipc.rs`, compositor commands in `stratvm`)
-- Clock shown in panel (`stratpanel/src/main.rs`, `clock.rs`)
-- [~~] Tray area in `main.rs`: stub cells **N/V/U/B** (`~~`= not wired,`-` = hidden via config); real volume/network/etc. still open
-- IPC `set panel autohide` + compositor flag (`stratpanel/src/ipc.rs`, `stratvm/src/main.c` `panel_autohide`)
-- Auto-hide in `stratpanel`: `set_size`/`set_exclusive_zone` peek bar + debounced collapse on pointer leave (`wl_pointer.leave` + `stratlayer`); expand on enter/motion/click
-- Panel IPC client (`stratpanel/src/ipc.rs`)
-- `/config/strat/panel.conf` reader (`stratpanel/src/config.rs`)
+- [x] Pinned app strip UI (`pinned.apps` in `main.rs`: scroll wheel + click launch absolute paths)
+- [x] Workspace switcher + IPC (`stratpanel/src/ipc.rs`; `stratvm` IPC `get workspaces` / `switch_workspace` in `stratvm/src/main.c`; ~1 Hz poll + refresh after click)
+- [x] Clock shown in panel (`stratpanel/src/main.rs`, `clock.rs`; initialized so first frame is not blank)
+- [x] Tray area in `main.rs`: cells **N/V/U/B** — hidden via `[tray]` toggles; **N**/**B** read sysfs (`operstate`, `BAT*` status) when shown; **V**/**U** remain stubs (`V~` / `U~`)
+- [x] IPC `set panel autohide` + compositor flag (`stratpanel/src/ipc.rs`, `stratvm/src/main.c` `panel_autohide`)
+- [x] Auto-hide in `stratpanel`: `set_size`/`set_exclusive_zone` peek bar + debounced collapse on pointer leave (`wl_pointer.leave` + `stratlayer`); expand on enter/motion/click
+- [x] Panel IPC client (`stratpanel/src/ipc.rs`)
+- [x] Panel config via **`StratSettings::load()`** + legacy **`panel.conf`** when no `settings.toml` (`stratpanel/src/config.rs`)
+- Deferred: full volume daemon / NetworkManager / richer tray (Phase 17+)
 
 ## Phase 25: Window management
 
 - Titlebar + close + float/max toggle (`stratvm/src/main.c` — scene rects, buttons)
-- Minimize from titlebar (min button currently `wlr_xdg_toplevel_send_close` — needs real iconify/minimize)
+- Minimize from titlebar (min button currently `wlr_xdg_toplevel_send_close` — same as close today; needs real iconify/minimize)
 - Interactive move / drag (`stratwm_apply_move_grab`, `grabbed_view`, titlebar + `request_move` in `stratvm/src/main.c`)
 - Layer Z-order: separate `wlr_scene_tree` layers; XDG under `layers_normal` (`stratvm/src/server.h`, `main.c`)
 - Titlebar right-click on empty titleband (`stratvm/src/main.c`): plain = toggle decorations; Super = move to next workspace; Shift = float toggle (no client-side menu yet)
 - Tiling / floating toggle (`toggle_float` in `stratvm/src/main.c`)
-- Cover Flow window switcher (Super+Tab)
-- Tabbed mode (Super+Shift+W)
+- `[ ]` Cover Flow / Exposé-style switcher: IPC command `trigger_coverflow` in `stratvm/src/main.c` is a **stub** (returns `OK` only); no Super+Tab (or other) keybinding yet
+- Workspace layout modes: Super+Space cycles **BSP → Stack (single visible tile) → Fullscreen → BSP** (`cycle_layout` in `stratvm/src/main.c`). `[ ]` Dedicated **Super+Shift+W** (or similar) shortcut not bound — use Super+Space until a separate binding lands
 - Decoration sizing from `/config/strat/stratvm.conf`: `titlebar_height=`, `border_pad=` (see `stratwm_load_deco_config`); radius / button shapes still hardcoded
 
 ## Phase 26: Settings
 
-- Indexer settings CLI (`stratterm/src/bin/strat-settings.rs` — `/config/strat/indexer.conf`)
-- Settings app (search-first UI) + full panels (display, sound, network, power, input, software, security, about)
+- **`stratos-settings`** Wayland UI + **`strat-ui-config`** CLI (`stratsettings/`); legacy indexer CLI (`stratterm/src/bin/strat-settings.rs` — `/config/strat/indexer.conf`)
+- `[ ]` Full control center: search-first shell + panels (display, sound, network, power, input, software, security, about) beyond what **`stratos-settings`** covers today
 - Appearance panel (theme, decorations, fonts) wired to compositor
 - Slots / updates UI (EFI + StratMon state)
 - Recovery UI (CONFIG / HOME / factory reset)

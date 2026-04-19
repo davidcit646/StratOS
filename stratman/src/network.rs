@@ -1,8 +1,8 @@
 //! Minimalist network manager for StratOS
-//! 
-//! Handles Ethernet link monitoring and DHCP without external daemons.
-//! WiFi is delegated to iwd (separate service).
-//! 
+//!
+//! Ethernet and Wi-Fi (after association): link monitoring and DHCP without NetworkManager.
+//! Wi-Fi association is handled by **`strat-wpa`** (`wpa_supplicant`); this process runs DHCP.
+//!
 //! Design: Run as stratman child process, restart on failure, signal state via exit codes.
 
 use std::fs;
@@ -77,7 +77,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            interface: "eth0".to_string(),
+            interface: "auto".to_string(),
             use_dhcp: true,
             static_ip: None,
             static_netmask: None,
@@ -103,6 +103,173 @@ pub fn read_carrier(interface: &str) -> LinkState {
     }
 }
 
+fn skip_iface(name: &str) -> bool {
+    matches!(name, "lo" | "lo0")
+        || name.starts_with("docker")
+        || name.starts_with("br-")
+        || name.starts_with("virbr")
+        || name.starts_with("veth")
+        || name.starts_with("tun")
+        || name.starts_with("tap")
+}
+
+fn is_wireless(interface: &str) -> bool {
+    interface.starts_with("wl")
+        || fs::metadata(format!("/sys/class/net/{}/phy80211", interface)).is_ok()
+}
+
+fn read_operstate(interface: &str) -> Option<String> {
+    fs::read_to_string(format!("/sys/class/net/{}/operstate", interface))
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// L2 ready for DHCP: Ethernet/USB NIC carrier; Wi-Fi `operstate` up when associated.
+pub fn read_link_ready(interface: &str) -> LinkState {
+    if is_wireless(interface) {
+        match read_operstate(interface).as_deref() {
+            Some("up") | Some("unknown") => return LinkState::Up,
+            Some("down") | Some("dormant") => return LinkState::Down,
+            _ => {}
+        }
+    }
+    read_carrier(interface)
+}
+
+fn list_physical_interfaces() -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(dir) = fs::read_dir("/sys/class/net") else {
+        return out;
+    };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if skip_iface(&name) {
+            continue;
+        }
+        out.push(name);
+    }
+    out.sort();
+    out
+}
+
+fn pick_auto_interface() -> Option<String> {
+    let ifs = list_physical_interfaces();
+    if ifs.is_empty() {
+        return None;
+    }
+    let wired: Vec<String> = ifs.iter().filter(|n| !is_wireless(n)).cloned().collect();
+    let wifi: Vec<String> = ifs.iter().filter(|n| is_wireless(n)).cloned().collect();
+
+    for n in &wired {
+        if read_carrier(n) == LinkState::Up {
+            return Some(n.clone());
+        }
+    }
+    for n in &wifi {
+        if read_operstate(n).as_deref() == Some("up") {
+            return Some(n.clone());
+        }
+    }
+    wired.into_iter().next().or_else(|| wifi.into_iter().next())
+}
+
+fn resolve_auto_interface(max_wait: Duration) -> String {
+    let steps = max_wait.as_secs().max(1);
+    for _ in 0..steps {
+        if let Some(i) = pick_auto_interface() {
+            return i;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    eprintln!(
+        "strat-network: auto: no usable interface after {}s, falling back to eth0",
+        steps
+    );
+    "eth0".to_string()
+}
+
+fn wait_for_interface(name: &str, max_wait: Duration) {
+    let steps = max_wait.as_secs().max(1);
+    for _ in 0..steps {
+        if interface_exists(name) {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn parse_ipv4_dotted(s: &str) -> Option<[u8; 4]> {
+    let mut out = [0u8; 4];
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    for (i, p) in parts.iter().enumerate() {
+        let n: u32 = p.parse().ok()?;
+        if n > 255 {
+            return None;
+        }
+        out[i] = n as u8;
+    }
+    Some(out)
+}
+
+fn opt_ipv4_string(field: &Option<String>) -> Option<[u8; 4]> {
+    field
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .and_then(parse_ipv4_dotted)
+}
+
+fn apply_modular_network(cfg: &mut NetworkConfig, n: &stratsettings::NetworkSettings) {
+    cfg.interface = n.interface.clone();
+    cfg.use_dhcp = n.use_dhcp;
+    cfg.static_ip = opt_ipv4_string(&n.static_ip);
+    cfg.static_netmask = opt_ipv4_string(&n.static_netmask);
+    cfg.static_gateway = opt_ipv4_string(&n.static_gateway);
+    cfg.retry_interval = Duration::from_secs(n.retry_interval_secs.max(1));
+    cfg.max_retries = n.max_retries.unwrap_or(u32::MAX);
+}
+
+fn apply_legacy_network_toml_shim(cfg: &mut NetworkConfig) {
+    if let Ok(s) = fs::read_to_string("/config/strat/network.toml") {
+        if let Ok(v) = toml::from_str::<toml::Value>(&s) {
+            if let Some(t) = v.as_table() {
+                if let Some(i) = t.get("interface").and_then(|x| x.as_str()) {
+                    cfg.interface = i.to_string();
+                }
+                if let Some(d) = t.get("use_dhcp").and_then(|x| x.as_bool()) {
+                    cfg.use_dhcp = d;
+                }
+            }
+        }
+    }
+}
+
+/// Load network options: built-in defaults, optional legacy `/config/strat/network.toml` (narrow shim),
+/// merged modular [`stratsettings::StratSettings`] table `[network]` (overrides shim when load succeeds),
+/// then `STRAT_NETWORK_INTERFACE` (interface name only).
+pub fn load_network_config() -> NetworkConfig {
+    let mut cfg = NetworkConfig::default();
+    apply_legacy_network_toml_shim(&mut cfg);
+
+    match stratsettings::StratSettings::load_from(std::path::Path::new(stratsettings::CONFIG_DIR)) {
+        Ok(s) => apply_modular_network(&mut cfg, &s.network),
+        Err(e) => eprintln!(
+            "strat-network: modular settings unavailable ({}), using defaults/shim only",
+            e
+        ),
+    }
+
+    if let Ok(s) = std::env::var("STRAT_NETWORK_INTERFACE") {
+        if !s.is_empty() {
+            cfg.interface = s;
+        }
+    }
+    cfg
+}
+
 /// Check if interface exists
 pub fn interface_exists(interface: &str) -> bool {
     fs::metadata(format!("/sys/class/net/{}", interface)).is_ok()
@@ -123,35 +290,42 @@ pub fn interface_exists(interface: &str) -> bool {
 /// - 101: DHCP failed (retry with backoff)
 /// - 102: Interface missing (fatal, check hardware)
 pub fn run_network_manager(config: NetworkConfig) -> ! {
-    let iface = &config.interface;
-    
-    // Verify interface exists
-    if !interface_exists(iface) {
-        eprintln!("strat-network: interface {} not found", iface);
+    let mut cfg = config;
+    if cfg.interface == "auto" {
+        println!("strat-network: resolving interface (auto)…");
+        cfg.interface = resolve_auto_interface(Duration::from_secs(120));
+        println!("strat-network: selected {}", cfg.interface);
+    }
+    wait_for_interface(&cfg.interface, Duration::from_secs(120));
+    if !interface_exists(&cfg.interface) {
+        eprintln!("strat-network: interface {} not found", cfg.interface);
         unsafe { libc::exit(102); }
     }
-    
+
+    let iface = cfg.interface.clone();
+    let iface = iface.as_str();
+
     let mut retry_count = 0;
     let mut last_state = LinkState::Unknown;
-    let mut backoff = config.retry_interval;
-    
+    let mut backoff = cfg.retry_interval;
+
     loop {
-        let carrier = read_carrier(iface);
-        
+        let link = read_link_ready(iface);
+
         // State change logging
-        if carrier != last_state {
-            match carrier {
+        if link != last_state {
+            match link {
                 LinkState::Up => println!("strat-network: {} link up", iface),
                 LinkState::Down => println!("strat-network: {} link down", iface),
                 LinkState::Unknown => println!("strat-network: {} link state unknown", iface),
             }
-            last_state = carrier;
+            last_state = link;
         }
-        
-        match carrier {
+
+        match link {
             LinkState::Up => {
                 // Try to get IP
-                if config.use_dhcp {
+                if cfg.use_dhcp {
                     match dhcp_request(iface) {
                         Ok(mut lease) => {
                             println!("strat-network: DHCP success - IP {},{},{},{}",
@@ -164,10 +338,10 @@ pub fn run_network_manager(config: NetworkConfig) -> ! {
                             } else {
                                 // Success - maintain lease (renewal at T1/T2)
                                 retry_count = 0;
-                                backoff = config.retry_interval;
+                                backoff = cfg.retry_interval;
                                 
                                 // Monitor lease and renew as needed
-                                maintain_lease(iface, &mut lease, &config);
+                                maintain_lease(iface, &mut lease, &cfg);
                             }
                         }
                         Err(e) => {
@@ -176,7 +350,7 @@ pub fn run_network_manager(config: NetworkConfig) -> ! {
                         }
                     }
                 } else if let (Some(ip), Some(netmask), Some(gateway)) = 
-                    (config.static_ip, config.static_netmask, config.static_gateway) {
+                    (cfg.static_ip, cfg.static_netmask, cfg.static_gateway) {
                     // Static configuration
                     if let Err(e) = configure_static(iface, ip, netmask, gateway) {
                         eprintln!("strat-network: static config failed: {}", e);
@@ -202,7 +376,7 @@ pub fn run_network_manager(config: NetworkConfig) -> ! {
         }
         
         // Check retry limit
-        if config.max_retries != u32::MAX && retry_count >= config.max_retries {
+        if cfg.max_retries != u32::MAX && retry_count >= cfg.max_retries {
             eprintln!("strat-network: max retries exceeded");
             unsafe { libc::exit(101); }
         }
@@ -1026,7 +1200,7 @@ fn maintain_lease(iface: &str, lease: &mut DhcpLease, _config: &NetworkConfig) {
     
     loop {
         // Check link state first
-        if read_carrier(iface) != LinkState::Up {
+        if read_link_ready(iface) != LinkState::Up {
             println!("strat-network: link down, releasing lease");
             dhcp_release(iface, &current_lease);
             unsafe { libc::exit(100); } // Signal link down, need to restart
@@ -1087,7 +1261,7 @@ fn maintain_lease(iface: &str, lease: &mut DhcpLease, _config: &NetworkConfig) {
 fn wait_for_link_down(iface: &str) {
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        if read_carrier(iface) != LinkState::Up {
+        if read_link_ready(iface) != LinkState::Up {
             println!("strat-network: link lost");
             return;
         }
@@ -1095,6 +1269,7 @@ fn wait_for_link_down(iface: &str) {
 }
 
 /// Check if system is online (has routable IP)
+#[allow(dead_code)]
 pub fn is_online() -> bool {
     // Check if default route exists
     fs::read_to_string("/proc/net/route")
@@ -1103,6 +1278,7 @@ pub fn is_online() -> bool {
 }
 
 /// Get online state for maintenance window decisions
+#[allow(dead_code)]
 pub fn network_status() -> (bool, Option<String>) {
     let online = is_online();
     let iface = "eth0"; // TODO: Detect primary interface

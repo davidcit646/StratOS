@@ -13,5 +13,6 @@ For a **feature-level changelog-style list**, see [../../stratterm/README.md](..
 
 ## Config paths
 
-- Indexer: `/config/strat/indexer.conf` (and `~/.config/...` fallback in tools).
-- Panel is separate (`/config/strat/panel.conf`).
+- **Merged settings:** `/config/strat/settings.toml` and `settings.d/*.toml` (see [stratsettings.md](stratsettings.md)); Stratterm reads subsets for terminal / file-browser behavior.
+- **Indexer:** `/config/strat/indexer.conf` (flat TOML; legacy **`strat-settings`** CLI still targets this file).
+- **Panel:** configured through merged settings (or legacy `panel.conf` when no `settings.toml`); not Stratterm-owned.

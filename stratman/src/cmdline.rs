@@ -16,6 +16,11 @@ pub fn cmdline_value(cmdline: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Live session (ISO / diagnostic): initramfs used tmpfs for CONFIG/APPS/HOME; do not mount block devices again.
+pub fn is_live_session(cmdline: &str) -> bool {
+    cmdline_value(cmdline, "strat.live").as_deref() == Some("1")
+}
+
 pub fn resolve_disk_spec(spec: &str) -> PathBuf {
     let s = spec.trim();
     if let Some(uuid) = s.strip_prefix("PARTUUID=") {
@@ -45,8 +50,10 @@ pub fn resolved_partition(cmdline: &str, key: &str, partnum: u8) -> PathBuf {
         if resolved.exists() {
             return resolved;
         }
-        // Early boot: udev may not have created /dev/disk/by-partuuid yet; use numbered nodes.
-        if resolved.starts_with(Path::new("/dev/disk/by-partuuid")) {
+        // Early boot: udev may not have created symlinks or enumerated nodes yet (by-partuuid
+        // and/or e.g. /dev/sdaN). If cmdline named any /dev path that is still missing, use
+        // numbered virtio/IDE fallbacks instead of returning a non-existent path.
+        if resolved.starts_with(Path::new("/dev/")) {
             return virtio_ide_partition(partnum);
         }
         return resolved;

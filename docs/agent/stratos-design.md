@@ -11,7 +11,7 @@
 
 | Topic                      | Rule                                                                                                                                                                                                        |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Three layers**           | **SYSTEM** (EROFS slots A/B/C), **CONFIG** (persistent settings), **HOME** (user data). Any one may be lost; the others remain coherent per the guarantee (human §1.3, §3.4).                               |
+| **Three layers**           | **SYSTEM** (EROFS slots A/B/C), **CONFIG** (persistent settings), **HOME** (user data). Any one may be lost; the others remain coherent per the guarantee (human sections **1.3**, **3.4**).                               |
 | **Honest filesystem**      | No union/overlay on `/system`. No symlink tricks for `/bin` `/lib` `/etc`. Allowed: real **bind** mounts (e.g. `/system`→`/usr`, `/config/var`→`/var`) as in initramfs + contract.                          |
 | **App config**             | Lookup order is **application-level**, not FS overlay: `/config/apps/…` → `/system/etc/…` → built-in defaults. See contract doc.                                                                            |
 | **Bootloader sovereignty** | **StratBoot** runs at EFI; it may perform block-level slot work before Linux mounts.                                                                                                                        |
@@ -37,14 +37,14 @@ Short narrative: [../human/boot-stack.md](../human/boot-stack.md). Bootloader de
 Use the human doc for UI copy, menus, and future features; use this table to jump.
 
 
-| §     | Topic                                                          | Repo relevance                                                                                                                      |
+| Sec.  | Topic                                                          | Repo relevance                                                                                                                      |
 | ----- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | Philosophy / tenets                                            | Product constraints; “no nag”, honest FS.                                                                                           |
-| 2     | Hardware requirements                                          | Docs only unless changing CI/QEMU assumptions.                                                                                      |
-| 3     | Architecture, kernel, **partitions**, **§3.4–3.6** FS + config | **Must** match `initramfs-init.c`, disk scripts, persistence contract.                                                              |
+| 2     | Hardware requirements                                          | Docs only unless changing CI or hardware assumptions.                                                                                      |
+| 3     | Architecture, kernel, **partitions**, **3.4–3.6** FS + config | **Must** match `initramfs-init.c`, disk scripts, persistence contract.                                                              |
 | 4     | **StratBoot**, EFI schema, boot flow, recovery                 | `stratboot/`, [efi-variables.md](../human/efi-variables.md).                                                                        |
 | 5     | Slots, **pinning**                                             | EFI vars + `stratboot` slot logic; user-facing rules.                                                                               |
-| 6     | **Update system** (supervisor narrative)                       | **Implement split:** `stratmon/` staging vs `stratboot/` apply; human §6.1 “supervisor on ESP” is aspirational—verify against code. |
+| 6     | **Update system** (supervisor narrative)                       | **Implement split:** `stratmon/` staging vs `stratboot/` apply; human section **6.1** “supervisor on ESP” is aspirational—verify against code. |
 | 7–8   | RAM, `.strat`                                                  | Mostly future / partial; grep crate `stratmon`, scripts before relying.                                                             |
 | 9–11  | **stratvm**, panel, Spotlite                                   | `stratvm/`, `stratpanel/`; Spotlite largely in `stratterm/` today ([spotlite.md](spotlite.md)).                                     |
 | 12–14 | Settings, terminal, default apps                               | `stratterm/`; checklist phases for gaps.                                                                                            |
@@ -55,7 +55,7 @@ Use the human doc for UI copy, menus, and future features; use this table to jum
 
 ## Partition / path quick ref
 
-GPT names and mount order: **human §3.2** and **runtime persistence contract**. Scripts: `scripts/create-test-disk.sh`, `scripts/update-test-disk.sh` must stay aligned with **StratBoot** `root=` **PARTUUID** and initramfs.
+GPT names and mount order: **human section 3.2** and **runtime persistence contract**. Scripts: `scripts/create-test-disk.sh`, `scripts/update-test-disk.sh` must stay aligned with **StratBoot** `root=` **PARTUUID** and initramfs.
 
 Legacy name mapping (checklist vs runtime): `**/cache` → `/apps`**, `**/user` → under `/home**` (contract “Checklist naming resolution”).
 

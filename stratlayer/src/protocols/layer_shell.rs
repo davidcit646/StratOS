@@ -1,8 +1,13 @@
 use crate::wire::protocol::{Argument, Message};
 use crate::wire::socket::WaylandSocket;
 
+pub const LAYER_BACKGROUND: u32 = 0;
+pub const LAYER_BOTTOM: u32 = 1;
 pub const LAYER_TOP: u32 = 2;
+/// `ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY` — fullscreen overlays (Spotlite, modals).
+pub const LAYER_OVERLAY: u32 = 3;
 pub const ANCHOR_TOP: u32 = 1;
+pub const ANCHOR_BOTTOM: u32 = 2;
 pub const ANCHOR_LEFT: u32 = 4;
 pub const ANCHOR_RIGHT: u32 = 8;
 

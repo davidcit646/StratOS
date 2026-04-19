@@ -7,7 +7,8 @@ pub use events::{Event, Interface};
 pub use protocols::{
     WlBuffer, WlCompositor, WlDisplay, WlKeyboard, WlPointer, WlRegistry, WlSeat, WlShm, WlShmPool,
     WlSurface, XdgSurface, XdgToplevel, XdgWmBase,
-    ZwlrLayerShellV1, ZwlrLayerSurfaceV1, LAYER_TOP, ANCHOR_TOP, ANCHOR_LEFT, ANCHOR_RIGHT,
+    ZwlrLayerShellV1, ZwlrLayerSurfaceV1, LAYER_TOP, LAYER_OVERLAY, ANCHOR_TOP, ANCHOR_BOTTOM,
+    ANCHOR_LEFT, ANCHOR_RIGHT,
 };
 pub use shm::{ShmBuffer, ShmPool};
 pub use wire::{Argument, Dispatcher, Message, MessageHeader, ObjectRegistry, WaylandSocket};

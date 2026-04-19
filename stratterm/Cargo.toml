@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 stratlayer = { path = "../stratlayer" }
+stratsettings = { path = "../stratsettings" }
 nix = { version = "0.29", features = ["mman", "fs", "socket", "user", "term", "process", "poll"] }
 libc = "0.2"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -20,3 +21,7 @@ path = "src/bin/stratterm-indexer.rs"
 [[bin]]
 name = "strat-settings"
 path = "src/bin/strat-settings.rs"
+
+[[bin]]
+name = "spotlite"
+path = "src/bin/spotlite.rs"

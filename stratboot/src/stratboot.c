@@ -1,6 +1,7 @@
 #include <efi.h>
 #include <efilib.h>
 #include <efiser.h>
+#include <protocol/SimpleFileSystem.h>
 #include "gop.h"
 #include "font.h"
 #include "input.h"
@@ -40,7 +41,7 @@ static void serial_log(EFI_SYSTEM_TABLE *st, const CHAR8 *msg) {
         return;
     }
 
-    // Best-effort normalization for OVMF/QEMU serial sinks.
+    // Best-effort normalization for firmware serial sinks.
     uefi_call_wrapper(serial->SetAttributes, 7, serial,
                       115200, 0, 0, NoParity, 8, OneStopBit);
 
@@ -1105,6 +1106,52 @@ static const CHAR16 *slot_initrd_path(StratSlotId slot) {
     }
 }
 
+/* LoadedImage->LoadOptions must point at firmware heap; stack goes invalid after return. */
+#define STRAT_KERNEL_CMDLINE_MAX   1024
+#define STRAT_KERNEL_CMDLINE_BYTES (STRAT_KERNEL_CMDLINE_MAX * sizeof(CHAR16))
+
+static EFI_STATUS strat_start_kernel_with_pooled_cmdline(
+    EFI_SYSTEM_TABLE *st,
+    EFI_HANDLE kernel_handle,
+    CHAR16 *cmdline_pool
+) {
+    if (st == NULL || cmdline_pool == NULL) {
+        if (cmdline_pool != NULL) {
+            FreePool(cmdline_pool);
+        }
+        return EFI_INVALID_PARAMETER;
+    }
+
+    EFI_LOADED_IMAGE *kernel_image = NULL;
+    EFI_STATUS li_status = uefi_call_wrapper(
+        st->BootServices->HandleProtocol,
+        3,
+        kernel_handle,
+        &LoadedImageProtocol,
+        (VOID **)&kernel_image
+    );
+
+    BOOLEAN attached = (li_status == EFI_SUCCESS && kernel_image != NULL);
+    if (attached) {
+        kernel_image->LoadOptions = cmdline_pool;
+        kernel_image->LoadOptionsSize =
+            (UINT32)((StrLen(cmdline_pool) + 1) * sizeof(CHAR16));
+    }
+
+    EFI_STATUS status = uefi_call_wrapper(
+        st->BootServices->StartImage,
+        3,
+        kernel_handle,
+        NULL,
+        NULL
+    );
+
+    if (!attached || status != EFI_SUCCESS) {
+        FreePool(cmdline_pool);
+    }
+    return status;
+}
+
 static EFI_STATUS start_kernel_efi(
     EFI_HANDLE image,
     EFI_SYSTEM_TABLE *st,
@@ -1151,10 +1198,14 @@ static EFI_STATUS start_kernel_efi(
 
     // Build cmdline with explicit console targets for VM visibility.
     // Include CONFIG / STRAT_CACHE (apps) / HOME PARTUUIDs so virtio (/dev/vda*) boots do not depend on guessed device names.
-    CHAR16 cmdline[1024];
+    CHAR16 *cmdline = AllocatePool(STRAT_KERNEL_CMDLINE_BYTES);
+    if (cmdline == NULL) {
+        uefi_call_wrapper(st->BootServices->UnloadImage, 1, kernel_handle);
+        return EFI_OUT_OF_RESOURCES;
+    }
     SPrint(
         cmdline,
-        sizeof(cmdline),
+        STRAT_KERNEL_CMDLINE_BYTES,
         L"root=PARTUUID=%s rootfstype=erofs ro "
         L"config=PARTUUID=%s apps=PARTUUID=%s home=PARTUUID=%s "
         L"initrd=%s loglevel=4 console=tty0 console=ttyS0,115200",
@@ -1165,19 +1216,122 @@ static EFI_STATUS start_kernel_efi(
         initrd_path
     );
 
-    EFI_LOADED_IMAGE *kernel_image = NULL;
-    EFI_STATUS li_status = uefi_call_wrapper(
-        st->BootServices->HandleProtocol, 3,
-        kernel_handle,
+    return strat_start_kernel_with_pooled_cmdline(st, kernel_handle, cmdline);
+}
+
+/* UEFI ISO / removable layout: marker file next to StratBoot on the FAT volume. */
+static EFI_STATUS strat_detect_live_medium(
+    EFI_HANDLE image,
+    EFI_SYSTEM_TABLE *st,
+    BOOLEAN *out_live
+) {
+    if (out_live == NULL || st == NULL || st->BootServices == NULL) {
+        return EFI_INVALID_PARAMETER;
+    }
+    *out_live = FALSE;
+
+    EFI_LOADED_IMAGE *loaded = NULL;
+    EFI_STATUS status = uefi_call_wrapper(
+        st->BootServices->HandleProtocol,
+        3,
+        image,
         &LoadedImageProtocol,
-        (VOID **)&kernel_image
+        (VOID **)&loaded
     );
-    if (li_status == EFI_SUCCESS && kernel_image != NULL) {
-        kernel_image->LoadOptions = cmdline;
-        kernel_image->LoadOptionsSize = (UINT32)((StrLen(cmdline) + 1) * sizeof(CHAR16));
+    if (status != EFI_SUCCESS || loaded == NULL) {
+        return EFI_SUCCESS;
     }
 
-    return uefi_call_wrapper(st->BootServices->StartImage, 3, kernel_handle, NULL, NULL);
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *volume = NULL;
+    status = uefi_call_wrapper(
+        st->BootServices->HandleProtocol,
+        3,
+        loaded->DeviceHandle,
+        &gEfiSimpleFileSystemProtocolGuid,
+        (VOID **)&volume
+    );
+    if (status != EFI_SUCCESS || volume == NULL) {
+        return EFI_SUCCESS;
+    }
+
+    EFI_FILE_PROTOCOL *root = NULL;
+    status = uefi_call_wrapper(volume->OpenVolume, 2, volume, &root);
+    if (status != EFI_SUCCESS || root == NULL) {
+        return EFI_SUCCESS;
+    }
+
+    EFI_FILE_PROTOCOL *marker = NULL;
+    status = uefi_call_wrapper(
+        root->Open,
+        5,
+        root,
+        &marker,
+        L"\\EFI\\STRAT\\LIVE",
+        EFI_FILE_MODE_READ,
+        0
+    );
+    if (status == EFI_SUCCESS && marker != NULL) {
+        uefi_call_wrapper(marker->Close, 1, marker);
+        *out_live = TRUE;
+    }
+    uefi_call_wrapper(root->Close, 1, root);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS start_kernel_efi_live(
+    EFI_HANDLE image,
+    EFI_SYSTEM_TABLE *st,
+    const CHAR16 *kernel_path,
+    const CHAR16 *initrd_path
+) {
+    EFI_STATUS status;
+    EFI_LOADED_IMAGE *loaded = NULL;
+
+    status = uefi_call_wrapper(
+        st->BootServices->HandleProtocol,
+        3,
+        image,
+        &LoadedImageProtocol,
+        (VOID **)&loaded
+    );
+    if (status != EFI_SUCCESS || loaded == NULL) {
+        return status;
+    }
+
+    EFI_DEVICE_PATH *dp = FileDevicePath(loaded->DeviceHandle, (CHAR16 *)kernel_path);
+    if (dp == NULL) {
+        return EFI_NOT_FOUND;
+    }
+
+    EFI_HANDLE kernel_handle = NULL;
+    status = uefi_call_wrapper(
+        st->BootServices->LoadImage,
+        6,
+        FALSE,
+        image,
+        dp,
+        NULL,
+        0,
+        &kernel_handle
+    );
+    if (status != EFI_SUCCESS) {
+        return status;
+    }
+
+    CHAR16 *cmdline = AllocatePool(STRAT_KERNEL_CMDLINE_BYTES);
+    if (cmdline == NULL) {
+        uefi_call_wrapper(st->BootServices->UnloadImage, 1, kernel_handle);
+        return EFI_OUT_OF_RESOURCES;
+    }
+    SPrint(
+        cmdline,
+        STRAT_KERNEL_CMDLINE_BYTES,
+        L"strat.live=1 strat.live_iso=1 "
+        L"initrd=%s loglevel=4 console=tty0 console=ttyS0,115200",
+        initrd_path
+    );
+
+    return strat_start_kernel_with_pooled_cmdline(st, kernel_handle, cmdline);
 }
 
 // strat_maybe_init_vars: on a factory-fresh machine, EFI vars are absent.
@@ -1261,6 +1415,25 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
 #ifdef DEBUG
     debugcon_log("StratBoot: vars ok\n");
 #endif
+
+    BOOLEAN strat_live_medium = FALSE;
+    strat_detect_live_medium(image, system_table, &strat_live_medium);
+
+    if (!strat_live_medium) {
+        EFI_STATUS upd = strat_slot_process_update_request(system_table, system_table->RuntimeServices);
+        if (upd == EFI_SUCCESS) {
+            Print(L"StratBoot: staged update verified; activating target slot\n");
+        } else if (upd == EFI_NOT_READY) {
+            /* No pending update, or vars absent — normal boot */
+        } else if (upd == EFI_SECURITY_VIOLATION) {
+            halt_with_message(system_table, &gop, "STRAT OS", "Staged update failed: hash mismatch");
+            return EFI_ABORTED;
+        } else {
+            Print(L"StratBoot: staged update failed: %r\n", upd);
+            halt_with_message(system_table, &gop, "STRAT OS", "Staged update failed");
+            return EFI_ABORTED;
+        }
+    }
 
     for (INT32 i = 0; i < 3; i++) {
         slot_root_partuuid[i][0] = L'\0';
@@ -1407,22 +1580,26 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
         return EFI_ABORTED;
     }
 
-    const CHAR16 *kpath    = slot_kernel_path(decision.slot);
-    const CHAR16 *rootdev  = slot_root_device(decision.slot);
-    const CHAR16 *initrd   = slot_initrd_path(decision.slot);
+    /* Live ISO only carries SLOT_A payloads under EFI (see scripts/build-live-iso.sh). */
+    StratSlotId boot_slot = strat_live_medium ? STRAT_SLOT_A : decision.slot;
+    const CHAR16 *kpath    = slot_kernel_path(boot_slot);
+    const CHAR16 *rootdev  = slot_root_device(boot_slot);
+    const CHAR16 *initrd   = slot_initrd_path(boot_slot);
 
     if (kpath == NULL || rootdev == NULL || initrd == NULL) {
         halt_with_message(system_table, &gop, "STRAT OS", "Invalid slot id");
         return EFI_ABORTED;
     }
 
-    if (rootdev[0] == L'\0') {
+    if (!strat_live_medium && rootdev[0] == L'\0') {
         Print(L"StratBoot: Missing slot PARTUUID\n");
         halt_with_message(system_table, &gop, "STRAT OS", "Missing slot PARTUUID");
         return EFI_ABORTED;
     }
 
-    if (misc_partuuid[0][0] == L'\0' || misc_partuuid[1][0] == L'\0' || misc_partuuid[2][0] == L'\0') {
+    if (!strat_live_medium &&
+        (misc_partuuid[0][0] == L'\0' || misc_partuuid[1][0] == L'\0' ||
+         misc_partuuid[2][0] == L'\0')) {
         Print(L"StratBoot: Missing CONFIG / STRAT_CACHE / HOME PARTUUID(s)\n");
         halt_with_message(system_table, &gop, "STRAT OS", "Storage layout incomplete");
         return EFI_ABORTED;
@@ -1434,16 +1611,21 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
 #endif
     Print(L"StratBoot: booting slot\n");
     draw_status(&gop, "STRAT OS", "Booting selected slot");
-    status = start_kernel_efi(
-        image,
-        system_table,
-        kpath,
-        rootdev,
-        misc_partuuid[0],
-        misc_partuuid[1],
-        misc_partuuid[2],
-        initrd
-    );
+
+    if (strat_live_medium) {
+        status = start_kernel_efi_live(image, system_table, kpath, initrd);
+    } else {
+        status = start_kernel_efi(
+            image,
+            system_table,
+            kpath,
+            rootdev,
+            misc_partuuid[0],
+            misc_partuuid[1],
+            misc_partuuid[2],
+            initrd
+        );
+    }
     if (status != EFI_SUCCESS) {
         halt_with_message(system_table, &gop, "STRAT OS", "Kernel load failed");
         return EFI_ABORTED;

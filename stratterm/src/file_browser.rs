@@ -50,10 +50,15 @@ pub struct FileBrowser {
 }
 
 impl FileBrowser {
+    #[allow(dead_code)]
     pub fn new(cwd: PathBuf) -> Self {
+        Self::with_view_mode(cwd, ViewMode::Flat)
+    }
+
+    pub fn with_view_mode(cwd: PathBuf, view_mode: ViewMode) -> Self {
         let mut browser = Self {
             cwd,
-            view_mode: ViewMode::Flat,
+            view_mode,
             expanded: HashSet::new(),
             entries: Vec::new(),
             list_dir_error: None,

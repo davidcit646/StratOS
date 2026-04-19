@@ -9,8 +9,8 @@ fn main() -> ! {
     // Check for network manager mode (called as child process)
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--network" {
-        // Run as network manager child process
-        let config = network::NetworkConfig::default();
+        // Child process: `/config` is already mounted by parent stratman.
+        let config = network::load_network_config();
         network::run_network_manager(config);
     }
     
@@ -23,10 +23,8 @@ fn main() -> ! {
             eprintln!("stratman: service manager failed: {}", e);
             emergency_shell();
         }
-        
+
         emergency_shell();
-        reboot(libc::RB_POWER_OFF);
-        libc::exit(0);
     }
 }
 
@@ -55,12 +53,6 @@ unsafe fn set_environment_variables() {
 
 unsafe fn mount_filesystems() {
     let cl = cmdline::read_proc_cmdline();
-    let cfg = cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "config", 5))
-        .expect("stratman: config device path");
-    let apps = cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "apps", 6))
-        .expect("stratman: apps device path");
-    let home = cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "home", 7))
-        .expect("stratman: home device path");
 
     ensure_dir(b"/proc\0");
     ensure_dir(b"/sys\0");
@@ -79,9 +71,30 @@ unsafe fn mount_filesystems() {
     mount_best_effort(b"proc\0", b"/proc\0", b"proc\0", 0, core::ptr::null());
     mount_best_effort(b"sys\0", b"/sys\0", b"sysfs\0", 0, core::ptr::null());
     mount_best_effort(b"dev\0", b"/dev\0", b"devtmpfs\0", 0, core::ptr::null());
-    mount_best_effort_source(cfg.as_ptr(), b"/config\0", b"ext4\0", 0, core::ptr::null());
-    mount_best_effort_source(apps.as_ptr(), b"/apps\0", b"ext4\0", 0, core::ptr::null());
-    mount_best_effort_source(home.as_ptr(), b"/home\0", b"btrfs\0", 0, core::ptr::null());
+
+    if !cmdline::is_live_session(&cl) {
+        let Some(cfg) =
+            cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "config", 5))
+        else {
+            eprintln!("stratman: config device path is not a valid C string (embedded NUL)");
+            emergency_shell();
+        };
+        let Some(apps) =
+            cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "apps", 6))
+        else {
+            eprintln!("stratman: apps device path is not a valid C string (embedded NUL)");
+            emergency_shell();
+        };
+        let Some(home) =
+            cmdline::path_to_cstring(&cmdline::resolved_partition(&cl, "home", 7))
+        else {
+            eprintln!("stratman: home device path is not a valid C string (embedded NUL)");
+            emergency_shell();
+        };
+        mount_best_effort_source(cfg.as_ptr(), b"/config\0", b"ext4\0", 0, core::ptr::null());
+        mount_best_effort_source(apps.as_ptr(), b"/apps\0", b"ext4\0", 0, core::ptr::null());
+        mount_best_effort_source(home.as_ptr(), b"/home\0", b"btrfs\0", 0, core::ptr::null());
+    }
     mount_best_effort(b"/config/var\0", b"/var\0", b"", libc::MS_BIND, core::ptr::null());
     mount_best_effort(b"/config/etc\0", b"/etc\0", b"", libc::MS_BIND, core::ptr::null());
     ensure_dir(b"/var/cache\0");
@@ -160,13 +173,15 @@ unsafe fn mount_best_effort(
     }
 }
 
-unsafe fn emergency_shell() {
+unsafe fn emergency_shell() -> ! {
     let prompt = b"stratos# \0";
     let mut line: [i8; 512] = [0; 512];
 
     let stdin = libc::fdopen(libc::STDIN_FILENO, b"r\0".as_ptr() as *const i8);
     if stdin.is_null() {
-        libc::exit(1);
+        loop {
+            libc::sleep(60);
+        }
     }
 
     loop {
@@ -208,9 +223,4 @@ unsafe fn emergency_shell() {
         let mut status: libc::c_int = 0;
         libc::waitpid(pid, &mut status, 0);
     }
-}
-
-unsafe fn reboot(cmd: libc::c_int) {
-    libc::reboot(cmd);
-    libc::exit(1);
 }

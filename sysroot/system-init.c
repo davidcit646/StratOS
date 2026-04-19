@@ -330,7 +330,7 @@ int main(void) {
     run_once_if_present("/bin/strat-indexer-boot.sh");
 
     // Wait for input devices so libinput can discover them.
-    // QEMU PS/2 devices appear late; without udev, wlroots can't hotplug.
+    // Some PS/2 devices appear late; without udev, wlroots can't hotplug.
     ensure_dir("/dev/input");
     if (wait_for_socket("/dev/input/event0", 100, 20) == 0) {
         log_status("input devices ready");

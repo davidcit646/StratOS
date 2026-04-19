@@ -6,7 +6,7 @@ Dense, **operational** briefs: file paths, entrypoints, invariants, and “do no
 
 | Brief | Scope |
 | ----- | ----- |
-| [stratos-design.md](stratos-design.md) | Invariants, boot chain, update split, § map to human design doc, grep starters |
+| [stratos-design.md](stratos-design.md) | Invariants, boot chain, update split, section map to human design doc, grep starters |
 
 ## Component briefs
 
@@ -18,8 +18,9 @@ Dense, **operational** briefs: file paths, entrypoints, invariants, and “do no
 | [stratvm.md](stratvm.md)                   | `stratvm/`, wlroots, IPC, scene layers         |
 | [stratpanel.md](stratpanel.md)             | `stratpanel/`, stratlayer, `/run/stratvm.sock` |
 | [stratterm.md](stratterm.md)               | `stratterm/`, binaries, config paths           |
-| [spotlite.md](spotlite.md)                 | Indexer, file browser, future launcher         |
+| [spotlite.md](spotlite.md)                 | Indexer, file browser, `/bin/spotlite` overlay   |
 | [stratmon.md](stratmon.md)                 | `stratmon/`, `--stage-update`, UPDATE.MAN      |
+| [stratsettings.md](stratsettings.md)       | `stratsettings/`, TOML merge, `stratos-settings` |
 | [stratsup-sysroot.md](stratsup-sysroot.md) | `stratsup/`, `sysroot/`, initramfs             |
 
 
@@ -37,8 +38,9 @@ Dense, **operational** briefs: file paths, entrypoints, invariants, and “do no
 | Path                                                             | Use                                      |
 | ---------------------------------------------------------------- | ---------------------------------------- |
 | [prompts/panel-window-chrome.md](prompts/panel-window-chrome.md) | Panel / decorations follow-up          |
+| [prompts/panel-flesh-out.md](prompts/panel-flesh-out.md)           | Workspace switcher, tray, pinned strip |
 | [prompts/file-explorer.md](prompts/file-explorer.md)             | Stratterm file browser + indexer / Phase 12 |
-| [prompts/live-iso.md](prompts/live-iso.md)                       | Bootable live ISO (`mkosi`), path to §17 installer |
+| [prompts/live-iso.md](prompts/live-iso.md)                       | Live ISO / installer roadmap (`xorriso` pipeline in-tree; Phase 17 UI still open) |
 
 
 When a brief disagrees with **[stratos-design.md](stratos-design.md)** or **[../human/stratos-design.md](../human/stratos-design.md)**, the **human** design doc wins unless the code has deliberately superseded it (then update the human doc).

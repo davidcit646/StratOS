@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use sha2::{Digest, Sha256};
@@ -38,12 +38,14 @@ fn increment_boot_count() -> Result<(), io::Error> {
     efi_vars::write_u8(efi_vars::VAR_BOOT_COUNT, new_count)
 }
 
+#[derive(Clone)]
 enum SlotStatus {
     Staging,
     Confirmed,
     Bad,
 }
 
+#[derive(Clone)]
 struct Slot {
     id: u8,
     status: SlotStatus,
@@ -255,30 +257,47 @@ fn mark_staging_pending(slot_id: u8) -> Result<(), io::Error> {
         ));
     }
 
-    efi_vars::write_u8(efi_vars::VAR_UPDATE_PENDING, slot_id)
+    efi_vars::set_target_slot(slot_id)
 }
 
 fn read_pending_slot() -> Result<Option<u8>, io::Error> {
     match efi_vars::read_u8(efi_vars::VAR_UPDATE_PENDING) {
-        Ok(slot_id) => {
-            if slot_id > 2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "STRAT_UPDATE_PENDING has invalid value",
-                ));
-            }
-            Ok(Some(slot_id))
-        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
+        Ok(0) => Ok(None),
+        Ok(1) => {
+            let slot = efi_vars::read_u8(efi_vars::VAR_TARGET_SLOT)?;
+            Ok(Some(slot))
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "STRAT_UPDATE_PENDING must be 0 or 1; use --stage-update to set activation",
+        )),
     }
 }
 
 fn clear_pending_slot() -> Result<(), io::Error> {
-    efi_vars::delete_u8(efi_vars::VAR_UPDATE_PENDING)
+    efi_vars::clear_update_request()
 }
 
-fn stage_update(image_path: &Path, target_slot: u8) -> Result<(), io::Error> {
+fn fetch_https_to_temp(url: &str) -> Result<PathBuf, io::Error> {
+    let response = ureq::get(url).call().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("HTTPS fetch failed: {e}"),
+        )
+    })?;
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut body)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let tmp = std::env::temp_dir().join(format!("stratmon-stage-{}.img", std::process::id()));
+    std::fs::write(&tmp, &body)?;
+    Ok(tmp)
+}
+
+fn stage_update_from_path(image_path: &Path, target_slot: u8) -> Result<(), io::Error> {
     if target_slot > 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -319,10 +338,22 @@ fn stage_update(image_path: &Path, target_slot: u8) -> Result<(), io::Error> {
     manifest::write_manifest(manifest_path, target_slot, expected_hash, &extents)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to write manifest: {}", e)))?;
 
-    // Mark the target slot as pending
-    mark_staging_pending(target_slot)?;
+    efi_vars::set_target_slot(target_slot)?;
+    efi_vars::set_target_hash(expected_hash)?;
+    efi_vars::set_update_pending()?;
 
     Ok(())
+}
+
+fn stage_update(image_ref: &str, target_slot: u8) -> Result<(), io::Error> {
+    if image_ref.starts_with("http://") || image_ref.starts_with("https://") {
+        let tmp = fetch_https_to_temp(image_ref)?;
+        let result = stage_update_from_path(&tmp, target_slot);
+        let _ = std::fs::remove_file(&tmp);
+        result
+    } else {
+        stage_update_from_path(Path::new(image_ref), target_slot)
+    }
 }
 
 fn print_usage() {
@@ -338,14 +369,14 @@ fn print_usage() {
     println!("  --increment-boot                   Increment boot counter");
     println!("  --set-active <slot_id>             Set active slot (must be confirmed)");
     println!("    slot_id: 0=A, 1=B, 2=C");
-    println!("  --mark-pending <slot_id>           Mark staging slot as pending update target");
+    println!("  --mark-pending <slot_id>           Set STRAT_TARGET_SLOT only (use --stage-update to hash + activate)");
     println!("    slot_id: 0=A, 1=B, 2=C");
     println!("  --show-pending                     Show pending update target");
     println!("  --clear-pending                    Clear pending update target");
     println!("  --staging-slot                     Show staging slot for updates");
     println!("  --active-slot                      Show active slot (default)");
-    println!("  --stage-update <image-path> <target-slot>  Stage update for target slot");
-    println!("    image-path: Path to system image file");
+    println!("  --stage-update <image-path-or-url> <target-slot>  Stage update for target slot");
+    println!("    image-path: Local path, or https:// URL (TLS via system roots; temp file)");
     println!("    target-slot: 0=A, 1=B, 2=C");
     println!("  --help                             Show this help");
 }
@@ -586,7 +617,10 @@ fn main() {
             2 => "C",
             _ => "unknown",
         };
-        println!("Staging slot {} marked as pending update target", slot_name);
+        println!(
+            "STRAT_TARGET_SLOT set to {} (run --stage-update to set hash + boot activation)",
+            slot_name
+        );
     }
 
     if let Some((slot_id, status)) = update_slot_arg {
@@ -618,8 +652,7 @@ fn main() {
     }
 
     if let Some((image_path, target_slot)) = stage_update_arg {
-        let path = Path::new(&image_path);
-        if let Err(e) = stage_update(path, target_slot) {
+        if let Err(e) = stage_update(&image_path, target_slot) {
             eprintln!("Error staging update: {}", e);
             process::exit(1);
         }

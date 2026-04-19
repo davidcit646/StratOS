@@ -1,0 +1,64 @@
+# Full StratOS build (kernel from stable tree) + live ISO.
+
+name: StratOS CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  LINUX_REF: v6.12.15
+
+jobs:
+  build-and-iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential cargo cpio dosfstools dwarves erofs-utils flex \
+            gdisk git gnu-efi gzip kpartx libelf-dev libevdev-dev libinput-dev \
+            libncurses-dev libpixman-1-dev libssl-dev libwayland-dev libwlroots-dev \
+            libxkbcommon-dev make mtools pkg-config rustc \
+            wayland-protocols xorriso \
+            btrfs-progs e2fsprogs
+
+      - name: Ensure wlr-protocols XML (Ubuntu may omit the standalone data package)
+        run: |
+          set -euo pipefail
+          if [ ! -f /usr/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml ]; then
+            sudo rm -rf /usr/share/wlr-protocols
+            sudo git clone --depth 1 \
+              https://gitlab.freedesktop.org/wlroots/wlr-protocols.git \
+              /usr/share/wlr-protocols
+          fi
+
+      - name: Fetch Linux kernel (gitignored in working trees)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$LINUX_REF" \
+            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
+
+      - name: Full build (disk + artifacts)
+        run: |
+          set -euo pipefail
+          ./build-all-and-run.sh
+
+      - name: Build live ISO
+        run: |
+          set -euo pipefail
+          ./scripts/build-live-iso.sh
+
+      - name: Verify ISO output
+        run: |
+          set -euo pipefail
+          test -f out/live/stratos-live.iso
+          ls -lh out/live/stratos-live.iso

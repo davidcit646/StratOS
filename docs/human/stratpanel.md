@@ -3,10 +3,15 @@
 **stratpanel** is a **Rust** client using the in-house **stratlayer** Wayland library. It creates a **layer-shell** top bar with:
 
 - A small **launcher / search input** strip (keyboard focusable),
-- **Workspace** buttons (via compositor IPC),
-- A **clock** (and room for tray widgets as they are implemented).
+- **Workspace** switcher (compositor IPC; `get workspaces` / `switch_workspace` on `/run/stratvm.sock`),
+- A **clock** (`clock.rs`),
+- **Pinned apps** strip (`pinned.apps` in `panel.conf`; scroll + click to launch),
+- **Tray** cells (**N**etwork / **V**olume / **U**pdates / **B**attery toggles in `[tray]` — N/B read sysfs when enabled; V/U are stubs),
+- Optional **auto-hide** (IPC `set panel autohide` + pointer enter/leave handling; see checklist Phase 24).
 
-Configuration is read from `**/config/strat/panel.conf`** (hand-rolled TOML parser in `stratpanel/src/config.rs`).
+**Layering:** the panel is a **layer-shell** surface; a focused **XDG** (application) window can still paint **above** it in the current compositor tree. On a live ISO this is easy to notice; it is tracked as UX polish, not a panel config bug.
+
+Configuration is loaded via **`stratsettings::StratSettings`** (`/config/strat/settings.toml`, `settings.d/`, embedded defaults); legacy **`/config/strat/panel.conf`** is merged only when **`settings.toml` is absent** (`stratpanel/src/config.rs`).
 
 ## How it connects
 

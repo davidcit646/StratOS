@@ -5,13 +5,29 @@ OBJCOPY         ?= $(firstword $(wildcard /run/host/usr/bin/x86_64-linux-gnu-obj
 DEBUG           ?= 0
 
 GNUEFI_INCLUDE  ?= $(firstword $(wildcard /run/host/usr/include/efi /usr/include/efi))
+# gnu-efi: linker script + crt often live under .../gnuefi/ (Fedora/RHEL, some Debian); fall back to flat .../lib/.
 GNUEFI_LIBDIR   ?= $(shell \
-	if [ -f /run/host/usr/lib/libgnuefi.a ]; then echo /run/host/usr/lib; \
+	if [ -f /run/host/usr/lib/gnuefi/libgnuefi.a ]; then echo /run/host/usr/lib/gnuefi; \
+	elif [ -f /usr/lib/gnuefi/libgnuefi.a ]; then echo /usr/lib/gnuefi; \
+	elif [ -f /usr/lib64/gnuefi/libgnuefi.a ]; then echo /usr/lib64/gnuefi; \
+	elif [ -f /run/host/usr/lib/libgnuefi.a ]; then echo /run/host/usr/lib; \
 	elif [ -f /usr/lib/libgnuefi.a ]; then echo /usr/lib; \
 	elif [ -f /usr/lib64/libgnuefi.a ]; then echo /usr/lib64; \
 	else echo /usr/lib; fi)
-GNUEFI_LDS      ?= $(firstword $(wildcard /run/host/usr/lib/elf_x86_64_efi.lds /usr/lib/elf_x86_64_efi.lds /usr/lib64/elf_x86_64_efi.lds))
-GNUEFI_CRT      ?= $(firstword $(wildcard /run/host/usr/lib/crt0-efi-x86_64.o /usr/lib/crt0-efi-x86_64.o /usr/lib64/crt0-efi-x86_64.o))
+GNUEFI_LDS      ?= $(firstword $(wildcard \
+	/run/host/usr/lib/gnuefi/elf_x86_64_efi.lds \
+	/usr/lib/gnuefi/elf_x86_64_efi.lds \
+	/usr/lib64/gnuefi/elf_x86_64_efi.lds \
+	/run/host/usr/lib/elf_x86_64_efi.lds \
+	/usr/lib/elf_x86_64_efi.lds \
+	/usr/lib64/elf_x86_64_efi.lds))
+GNUEFI_CRT      ?= $(firstword $(wildcard \
+	/run/host/usr/lib/gnuefi/crt0-efi-x86_64.o \
+	/usr/lib/gnuefi/crt0-efi-x86_64.o \
+	/usr/lib64/gnuefi/crt0-efi-x86_64.o \
+	/run/host/usr/lib/crt0-efi-x86_64.o \
+	/usr/lib/crt0-efi-x86_64.o \
+	/usr/lib64/crt0-efi-x86_64.o))
 SYSINCLUDE      ?= $(firstword $(wildcard /run/host/usr/include /usr/include))
 
 CFLAGS  = -I$(GNUEFI_INCLUDE) -I$(GNUEFI_INCLUDE)/x86_64 \
@@ -40,8 +56,14 @@ debug: DEBUG=1
 debug: check BOOTX64.EFI
 
 check:
-	@if [ -z "$(GNUEFI_LDS)" ]; then echo "Missing elf_x86_64_efi.lds"; exit 1; fi
-	@if [ -z "$(GNUEFI_CRT)" ]; then echo "Missing crt0-efi-x86_64.o"; exit 1; fi
+	@if [ -z "$(GNUEFI_LDS)" ]; then \
+		echo "Missing elf_x86_64_efi.lds (install gnu-efi dev: e.g. Fedora gnu-efi-devel, Debian/Ubuntu gnu-efi)"; \
+		exit 1; \
+	fi
+	@if [ -z "$(GNUEFI_CRT)" ]; then \
+		echo "Missing crt0-efi-x86_64.o (same package as above)"; \
+		exit 1; \
+	fi
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

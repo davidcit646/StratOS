@@ -1,0 +1,3 @@
+# Matches [keyboard] defaults — copied to rootfs; stratvm reads at boot.
+spotlite 64 46
+cycle_layout 64 32

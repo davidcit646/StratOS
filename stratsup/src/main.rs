@@ -339,8 +339,8 @@ fn main() {
                         std::process::exit(0);
                     }
                     "reset" => {
-                        if let Err(err) = efi_vars::write_u8(efi_vars::VAR_UPDATE_PENDING, 0) {
-                            eprintln!("stratsup: failed to clear update pending: {}", err);
+                        if let Err(err) = efi_vars::clear_update_request() {
+                            eprintln!("stratsup: failed to clear update request vars: {}", err);
                             std::process::exit(1);
                         }
                         if let Err(err) = efi_vars::write_u8(efi_vars::VAR_BOOT_ATTEMPTS, 0) {
@@ -368,8 +368,8 @@ fn main() {
                             }
                         }
 
-                        if let Err(err) = efi_vars::write_u8(efi_vars::VAR_UPDATE_PENDING, 0) {
-                            eprintln!("stratsup: failed to clear update pending: {}", err);
+                        if let Err(err) = efi_vars::clear_update_request() {
+                            eprintln!("stratsup: failed to clear update request vars: {}", err);
                             std::process::exit(1);
                         }
 

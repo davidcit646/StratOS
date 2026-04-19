@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use stratsettings::SpotliteHeadlessSettings;
+
 #[derive(Debug, Clone)]
 struct IndexerConfig {
     enabled: bool,
@@ -74,67 +76,87 @@ fn config_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+fn apply_spotlite_headless(config: &mut IndexerConfig, h: &SpotliteHeadlessSettings) {
+    config.enabled = h.enabled;
+    config.boot_start = h.boot_start;
+    config.frequency_ms = h.frequency_ms;
+    config.rescan_secs = h.rescan_secs;
+    config.batch_limit = h.batch_limit;
+    config.high_usage_load_per_cpu = h.high_usage_load_per_cpu;
+    if !h.roots.is_empty() {
+        config.roots = h.roots.iter().map(PathBuf::from).collect();
+    }
+    config.exclude_prefixes = h.exclude_prefixes.iter().map(PathBuf::from).collect();
+}
+
+fn apply_indexer_conf_text(config: &mut IndexerConfig, content: &str) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (key, value) = match trimmed.split_once('=') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "enabled" => {
+                if let Some(parsed) = parse_bool(value) {
+                    config.enabled = parsed;
+                }
+            }
+            "boot_start" => {
+                if let Some(parsed) = parse_bool(value) {
+                    config.boot_start = parsed;
+                }
+            }
+            "frequency_ms" => {
+                if let Ok(parsed) = value.parse() {
+                    config.frequency_ms = parsed;
+                }
+            }
+            "rescan_secs" => {
+                if let Ok(parsed) = value.parse() {
+                    config.rescan_secs = parsed;
+                }
+            }
+            "batch_limit" => {
+                if let Ok(parsed) = value.parse() {
+                    config.batch_limit = parsed;
+                }
+            }
+            "high_usage_load_per_cpu" => {
+                if let Ok(parsed) = value.parse() {
+                    config.high_usage_load_per_cpu = parsed;
+                }
+            }
+            "roots" => {
+                let parsed = parse_paths(value);
+                if !parsed.is_empty() {
+                    config.roots = parsed;
+                }
+            }
+            "exclude_prefixes" => {
+                config.exclude_prefixes = parse_paths(value);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn load_config() -> IndexerConfig {
     let mut config = IndexerConfig::default();
+    if let Ok(settings) = stratsettings::StratSettings::load() {
+        apply_spotlite_headless(&mut config, &settings.spotlite.headless);
+    }
     for candidate in config_candidates() {
         let content = match read_text(&candidate) {
             Ok(text) => text,
             Err(_) => continue,
         };
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let (key, value) = match trimmed.split_once('=') {
-                Some(pair) => pair,
-                None => continue,
-            };
-            let key = key.trim();
-            let value = value.trim();
-            match key {
-                "enabled" => {
-                    if let Some(parsed) = parse_bool(value) {
-                        config.enabled = parsed;
-                    }
-                }
-                "boot_start" => {
-                    if let Some(parsed) = parse_bool(value) {
-                        config.boot_start = parsed;
-                    }
-                }
-                "frequency_ms" => {
-                    if let Ok(parsed) = value.parse() {
-                        config.frequency_ms = parsed;
-                    }
-                }
-                "rescan_secs" => {
-                    if let Ok(parsed) = value.parse() {
-                        config.rescan_secs = parsed;
-                    }
-                }
-                "batch_limit" => {
-                    if let Ok(parsed) = value.parse() {
-                        config.batch_limit = parsed;
-                    }
-                }
-                "high_usage_load_per_cpu" => {
-                    if let Ok(parsed) = value.parse() {
-                        config.high_usage_load_per_cpu = parsed;
-                    }
-                }
-                "roots" => {
-                    let parsed = parse_paths(value);
-                    if !parsed.is_empty() {
-                        config.roots = parsed;
-                    }
-                }
-                "exclude_prefixes" => {
-                    config.exclude_prefixes = parse_paths(value);
-                }
-                _ => {}
-            }
-        }
+        apply_indexer_conf_text(&mut config, &content);
         return config;
     }
     config

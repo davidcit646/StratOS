@@ -2,6 +2,7 @@ name = "strat-network"
 exec = "/bin/stratman"
 args = ["--network"]
 restart = "always"
+depends = ["strat-wpa"]
 # Restart with exponential backoff: 5s, 10s, 20s, 40s, 60s (max)
 # Exit codes:
 #   100 = Link down (expected, retry)

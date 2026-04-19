@@ -1,0 +1,86 @@
+# StratOS default UI settings (merged first; overridden by settings.toml + settings.d/*.toml).
+# Edit on disk under /config/strat/ or add a file in settings.d/ — lexicographic order, later wins.
+
+# Stratterm: PTY + file explorer (F7). Legacy flat keys under [stratterm] are still accepted.
+[stratterm.term]
+# scrollback_max_lines = 10000   # 0 = use built-in default (10000)
+# terminal_font_scale = 1.0      # reserved (embedded bitmap)
+
+[stratterm.file_explorer]
+# status_bar_enabled = 1
+# client_title_bar_enabled = 1
+# title_bar_font_scale = 1.0
+# default_view = "flat"          # or "tree"
+
+[panel]
+position = "top"
+autohide = false
+summon_key = "super+grave"
+size = 28
+opacity = 0.85
+blur = true
+font_scale = 1.0
+
+[panel.clock]
+format = "12hr"
+show_date = false
+
+[panel.pinned]
+apps = []
+
+[panel.workspace]
+enabled = true
+poll_interval_secs = 1
+show_labels = true
+max_visible = 0
+
+[panel.tray]
+show_network = true
+show_volume = true
+show_updates = true
+show_battery = true
+
+[chrome]
+decoration_titlebar_height = 28
+border_pad = 2
+decorations_enabled_default = true
+
+# Compositor shortcuts (exported to stratvm-keybinds for stratvm).
+[keyboard]
+spotlite = "super+period"
+cycle_layout = "super+space"
+
+# Spotlite / path indexer — unified with scripts; indexer.conf still overlays per-key when present.
+[spotlite.headless]
+enabled = true
+boot_start = true
+frequency_ms = 1200
+rescan_secs = 180
+batch_limit = 96
+high_usage_load_per_cpu = 0.85
+roots = ["/home", "/config", "/apps"]
+exclude_prefixes = []
+
+[spotlite.ui]
+enabled = true
+tick_ms = 750
+batch_limit = 80
+idle_after_secs = 12
+startup_grace_secs = 8
+post_nav_delay_ms = 180
+post_nav_scan_limit = 1200
+post_nav_force_secs = 6
+
+# stratman --network + strat-wpa (wpa_supplicant). `interface = "auto"` prefers wired/USB-Ethernet, then Wi‑Fi.
+[network]
+interface = "auto"
+use_dhcp = true
+# static_ip = "192.168.1.10"
+# static_netmask = "255.255.255.0"
+# static_gateway = "192.168.1.1"
+retry_interval_secs = 5
+# max_retries = 100   # omit for unlimited
+
+# Example extension hook (ignored by core apps unless they opt in):
+# [demo.plugin]
+# enabled = true

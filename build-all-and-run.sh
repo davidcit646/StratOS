@@ -1,5 +1,5 @@
 #!/bin/bash
-# Full StratOS build script - builds everything inline and runs QEMU
+# Full StratOS build script — kernel, userspace, rootfs, EROFS, test-disk refresh.
 # Usage: ./build-all-and-run.sh [--clean] [--skip-kernel] [--recreate-disk]
 
 set -euo pipefail
@@ -9,8 +9,6 @@ OUT_DIR="$REPO_ROOT/out/phase7"
 PHASE4_DIR="$REPO_ROOT/out/phase4"
 PHASE3_DIR="$REPO_ROOT/out/phase3"
 IDE_LOG_DIR="$REPO_ROOT/ide-logs"
-LOG_FILE="$IDE_LOG_DIR/qemu_strattest.txt"
-QEMU_SERIAL_LOG="$IDE_LOG_DIR/qemu-desktop-serial.txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -72,13 +70,6 @@ if [ ! -d "$PHASE4_DIR" ]; then
 fi
 if [ ! -d "$PHASE3_DIR" ]; then
     mkdir -p "$PHASE3_DIR"
-fi
-
-# Kill existing QEMU
-if pgrep -f "qemu-system-x86_64.*$REPO_ROOT/out/phase4/test-disk.img" > /dev/null 2>&1; then
-    log_warn "Stopping existing QEMU..."
-    pkill -f "qemu-system-x86_64.*$REPO_ROOT/out/phase4/test-disk.img" 2>/dev/null || true
-    sleep 2
 fi
 
 require_cmd make
@@ -198,6 +189,17 @@ cargo build --release
 log_ok "stratpanel built"
 
 # ============================================================================
+# 4b. BUILD STRATSETTINGS (strat-ui-config CLI + stratos-settings Wayland UI)
+# ============================================================================
+log_info "Building stratsettings..."
+cd "$REPO_ROOT/stratsettings"
+if [ $CLEAN_BUILD -eq 1 ]; then
+    cargo clean
+fi
+cargo build --release --bins
+log_ok "stratsettings built"
+
+# ============================================================================
 # 5. BUILD STRATTERM
 # ============================================================================
 log_info "Building stratterm..."
@@ -278,6 +280,15 @@ FIRST_BOOT_SRC="$REPO_ROOT/sysroot/first-boot-provision.sh"
 
 rm -rf "$ROOTFS_DIR"
 mkdir -p "$ROOTFS_DIR"/{bin,sbin,lib,lib64,etc,dev,proc,sys,run,tmp,var,home,usr/{bin,sbin,lib,lib64},boot,system,config,apps}
+mkdir -p "$ROOTFS_DIR/config/strat/settings.d"
+cp -f "$REPO_ROOT/stratsettings/defaults/settings.default.toml" "$ROOTFS_DIR/config/strat/settings.toml"
+cp -f "$REPO_ROOT/stratsettings/defaults/stratvm-keybinds.default" "$ROOTFS_DIR/config/strat/stratvm-keybinds"
+if [ -f "$REPO_ROOT/stratterm/indexer.conf.example" ]; then
+    cp -f "$REPO_ROOT/stratterm/indexer.conf.example" "$ROOTFS_DIR/config/strat/indexer.conf"
+fi
+if [ -f "$REPO_ROOT/stratsettings/defaults/wpa_supplicant.default.conf" ]; then
+    cp -f "$REPO_ROOT/stratsettings/defaults/wpa_supplicant.default.conf" "$ROOTFS_DIR/config/strat/wpa_supplicant.conf"
+fi
 
 # Create essential device nodes
 mknod -m 666 "$ROOTFS_DIR/dev/null" c 1 3 2>/dev/null || true
@@ -289,7 +300,10 @@ mknod -m 666 "$ROOTFS_DIR/dev/tty" c 5 0 2>/dev/null || true
 # Copy binaries
 cp "$REPO_ROOT/stratvm/stratwm" "$ROOTFS_DIR/bin/"
 cp "$REPO_ROOT/stratpanel/target/release/stratpanel" "$ROOTFS_DIR/bin/"
+cp "$REPO_ROOT/stratsettings/target/release/stratos-settings" "$ROOTFS_DIR/bin/" 2>/dev/null || true
+cp "$REPO_ROOT/stratsettings/target/release/strat-ui-config" "$ROOTFS_DIR/bin/" 2>/dev/null || true
 cp "$REPO_ROOT/stratterm/target/release/stratterm" "$ROOTFS_DIR/bin/"
+cp "$REPO_ROOT/stratterm/target/release/spotlite" "$ROOTFS_DIR/bin/" 2>/dev/null || true
 cp "$REPO_ROOT/stratman/target/release/stratman" "$ROOTFS_DIR/bin/"
 cp "$REPO_ROOT/stratsup/target/x86_64-unknown-linux-gnu/release/stratsup" "$ROOTFS_DIR/bin/" 2>/dev/null || \
     cp "$REPO_ROOT/stratsup/target/release/stratsup" "$ROOTFS_DIR/bin/" 2>/dev/null || true
@@ -330,10 +344,39 @@ chmod 0755 "$ROOTFS_DIR/sbin/system-init"
 cp "$FIRST_BOOT_SRC" "$ROOTFS_DIR/sbin/first-boot-provision.sh"
 chmod 0755 "$ROOTFS_DIR/sbin/first-boot-provision.sh"
 
+# Disk installer (live session → bare metal); keep host tools in sync with strat-installer.sh
+if [ -f "$REPO_ROOT/scripts/strat-installer.sh" ]; then
+    cp "$REPO_ROOT/scripts/strat-installer.sh" "$ROOTFS_DIR/bin/strat-installer"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-installer"
+fi
+copy_host_tool_for_installer() {
+    local name="$1"
+    local src
+    src=$(command -v "$name" 2>/dev/null) || return 0
+    mkdir -p "$ROOTFS_DIR/usr/sbin"
+    cp -L "$src" "$ROOTFS_DIR/usr/sbin/$name"
+    if command -v ldd >/dev/null 2>&1 && [ -f "$src" ]; then
+        ldd "$src" 2>/dev/null | awk '/=> \// {print $3}' | while read -r lib; do
+            [ -n "$lib" ] && [ -f "$lib" ] && cp -L "$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
+        done
+    fi
+}
+for _t in sgdisk partprobe mkfs.vfat mkfs.ext4 mke2fs mkfs.btrfs blkid lsblk blockdev; do
+    copy_host_tool_for_installer "$_t" || true
+done
+
+if [ -f "$REPO_ROOT/sysroot/strat-wpa.sh" ]; then
+    cp "$REPO_ROOT/sysroot/strat-wpa.sh" "$ROOTFS_DIR/bin/strat-wpa.sh"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-wpa.sh"
+fi
+for _t in wpa_supplicant wpa_cli rfkill; do
+    copy_host_tool_for_installer "$_t" || true
+done
+
 # Copy shell and essential tools
 if [ -x /bin/busybox ]; then
     cp /bin/busybox "$ROOTFS_DIR/bin/"
-    for applet in sh ls cat cp mv rm mkdir rmdir ps kill; do
+    for applet in sh ls cat cp mv rm mkdir rmdir ps kill grep; do
         ln -sf busybox "$ROOTFS_DIR/bin/$applet"
     done
 elif [ -x /bin/bash ]; then
@@ -418,9 +461,34 @@ done
 mkdir -p "$ROOTFS_DIR/usr/share/terminfo"
 cp -r /usr/share/terminfo/x "$ROOTFS_DIR/usr/share/terminfo/" 2>/dev/null || true
 
-# Copy fonts
+# Copy fonts (bundled FOS set + optional host fonts/)
+if [ -x "$REPO_ROOT/scripts/fetch-fos-fonts.sh" ]; then
+    log_info "Bundled open fonts (scripts/fetch-fos-fonts.sh; skips existing files)"
+    "$REPO_ROOT/scripts/fetch-fos-fonts.sh" || log_warn "fetch-fos-fonts.sh reported errors (offline?); continuing with any cached files"
+fi
 mkdir -p "$ROOTFS_DIR/usr/share/fonts"
 cp -r /usr/share/fonts/* "$ROOTFS_DIR/usr/share/fonts/" 2>/dev/null || true
+mkdir -p "$ROOTFS_DIR/usr/share/fonts/stratos"
+shopt -s nullglob
+_strat_fonts=( "$REPO_ROOT/fonts/stratos/"*.ttf "$REPO_ROOT/fonts/stratos/"*.otf "$REPO_ROOT/fonts/stratos/"*.ttc )
+shopt -u nullglob
+if [ "${#_strat_fonts[@]}" -gt 0 ]; then
+    cp -f "${_strat_fonts[@]}" "$ROOTFS_DIR/usr/share/fonts/stratos/"
+    log_ok "Copied ${#_strat_fonts[@]} bundled font files -> $ROOTFS_DIR/usr/share/fonts/stratos/"
+else
+    log_warn "No fonts under fonts/stratos (run ./scripts/fetch-fos-fonts.sh with network once)"
+fi
+
+# DMZ-White Xcursor theme (stratwm + clients; see scripts/fetch-dmz-cursor-theme.sh)
+if [ -x "$REPO_ROOT/scripts/fetch-dmz-cursor-theme.sh" ]; then
+    log_info "Cursor theme (scripts/fetch-dmz-cursor-theme.sh)"
+    "$REPO_ROOT/scripts/fetch-dmz-cursor-theme.sh" || log_warn "fetch-dmz-cursor-theme.sh failed (offline?); continuing"
+fi
+mkdir -p "$ROOTFS_DIR/usr/share/icons"
+if [ -d "$REPO_ROOT/icons/dmz-white" ]; then
+    cp -a "$REPO_ROOT/icons/dmz-white" "$ROOTFS_DIR/usr/share/icons/"
+    log_ok "Installed dmz-white cursor theme -> $ROOTFS_DIR/usr/share/icons/dmz-white"
+fi
 
 # Copy runtime data needed by libinput/xkb at boot.
 mkdir -p "$ROOTFS_DIR/usr/share"
@@ -483,21 +551,5 @@ fi
     --initrd "$INITRD_IMG"
 
 log_ok "Test disk updated -> $DISK_IMAGE"
-
-# ============================================================================
-# 13. RUN QEMU
-# ============================================================================
-log_info "Starting QEMU..."
-log_info "Logging to: $LOG_FILE"
-
-QEMU_SCRIPT="$REPO_ROOT/scripts/run-qemu.sh"
-
-if [ -x "$QEMU_SCRIPT" ]; then
-    : > "$LOG_FILE"
-    : > "$QEMU_SERIAL_LOG"
-    SERIAL_LOG_PATH="$QEMU_SERIAL_LOG" "$QEMU_SCRIPT" 2>&1 | tee "$LOG_FILE"
-    log_ok "QEMU serial log: $QEMU_SERIAL_LOG"
-else
-    log_error "QEMU script not found: $QEMU_SCRIPT"
-    exit 1
-fi
+log_ok "Build complete. Flash or attach $DISK_IMAGE on bare metal, or write out/live/stratos-live.iso to USB (see docs/human/live-iso.md)."
+exit 0

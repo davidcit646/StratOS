@@ -7,7 +7,7 @@
 - Bring up basic mounts and environment (`stratman/src/main.rs`).
 - Load **TOML service manifests** from `stratman/manifests/` and supervise child processes (`stratman/src/service.rs`).
 - Run **maintenance** tasks when the machine is idle (`stratman/src/maint.rs`).
-- Optional **network manager** mode: `stratman --network` runs DHCP / link logic used by `strat-network` (`stratman/src/network.rs`).
+- **Networking:** `strat-wpa` runs `wpa_supplicant` when `/config/strat/wpa_supplicant.conf` has a `network={}` block; `strat-network` runs `stratman --network` (DHCP, `[network]` in `settings.toml`, optional `/config/strat/network.toml` shim). `interface = "auto"` prefers wired or USB Ethernet, then Wi-Fi.
 
 ## What it does *not* replace
 

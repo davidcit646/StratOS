@@ -1,6 +1,16 @@
 # Build outputs
 out/
 
+# Bundled open fonts (TTF/OTF/TTC from scripts/fetch-fos-fonts.sh; keep fonts/README.md in git)
+fonts/stratos/*.ttf
+fonts/stratos/*.otf
+fonts/stratos/*.ttc
+fonts/stratos/*.part
+fonts/stratos/.dejavu-2.37.extracted
+
+# DMZ-White cursors (from scripts/fetch-dmz-cursor-theme.sh)
+icons/dmz-white/
+
 # Third-party source (downloaded by build scripts)
 third_party/
 *.raw
@@ -9,9 +19,6 @@ third_party/
 
 # Kernel source tree (external, not part of StratOS source)
 linux/
-
-# OVMF runtime vars (machine-specific UEFI state)
-ovmf_vars.fd
 
 # Compiled objects and binaries
 *.o
@@ -68,7 +75,7 @@ stratterm/Cargo.lock
 *.swp
 *~
 
-# IDE-local run logs (QEMU serial, desktop test captures, etc.)
+# IDE-local run logs
 ide-logs/
 
 # Log files

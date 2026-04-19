@@ -10,6 +10,7 @@ These documents are written for **people**: onboarding, architecture, contracts,
 | [stratos-design.md](stratos-design.md)                               | Canonical long-form design (filesystems, updates, desktop). Agent digest: [../agent/stratos-design.md](../agent/stratos-design.md). |
 | [boot-stack.md](boot-stack.md)                                       | Short story: firmware → initramfs → stratman → compositor.  |
 | [runtime-persistence-contract.md](runtime-persistence-contract.md)   | What lives on which partition; mount order.                 |
+| [live-iso.md](live-iso.md)                                           | Live UEFI ISO (xorriso pipeline, USB, tmpfs live session). |
 | [application-config-resolution.md](application-config-resolution.md) | How apps resolve config without mutating `/system`.         |
 | [etc-on-config.md](etc-on-config.md)                                 | Why `/etc` is bind-mounted from CONFIG.                     |
 | [efi-variables.md](efi-variables.md)                                 | EFI names StratBoot reads/writes.                           |
@@ -32,7 +33,8 @@ These documents are written for **people**: onboarding, architecture, contracts,
 | [stratboot.md](stratboot.md)                       | UEFI bootloader, slots, kernel handoff.            |
 | [stratman.md](stratman.md)                         | PID 1, services, maintenance, network child.       |
 | [stratvm.md](stratvm.md)                           | Wayland compositor (stratwm), IPC, layers.         |
-| [stratpanel.md](stratpanel.md)                     | Top panel, layer shell client, `panel.conf`.       |
+| [stratpanel.md](stratpanel.md)                     | Top panel, layer shell client, merged settings + legacy `panel.conf`. |
+| [stratsettings.md](stratsettings.md)               | Modular TOML (`settings.toml`), `stratos-settings`, `strat-ui-config`. |
 | [stratterm.md](stratterm.md)                       | Terminal, Wayland client, PTY.                     |
 | [file-explorer.md](file-explorer.md)             | File browsing → use Stratterm (`F7`); no separate app. |
 | [spotlite.md](spotlite.md)                         | Search/indexer vision vs what ships today.         |

@@ -6,11 +6,11 @@ Copy everything below the line into a new agent chat (or Cursor agent) as the **
 
 ## Context
 
-StratOS boots to a **wlroots-based compositor** (`stratvm/`, binary `stratwm`) with a **Rust panel** (`stratpanel/`) and **stratterm** as the main terminal. There is **no file manager app**, **no settings app**, and **no “desktop shell”** beyond what the panel + compositor already provide. The goal of this task is to make the **panel and window decorations behave as designed**, and to add **minimal, intentional** affordances (launcher strip, tray basics, stacking fix, movable windows) so the session feels usable—not to build a full Phase 26 settings suite unless you explicitly expand scope.
+StratOS boots to a **wlroots-based compositor** (`stratvm/`, binary `stratwm`) with a **Rust panel** (`stratpanel/`) and **stratterm** as the main terminal. There is **no standalone file manager app**; **`stratos-settings`** exists for merged config + keybinds, but there is **no full multi-panel “control center”** yet. Treat the session as **panel + compositor + terminal + minimal settings UI**—not a full desktop shell. The goal of this task is to make the **panel and window decorations behave as designed**, and to add **minimal, intentional** affordances (launcher strip, tray basics, stacking fix, movable windows) so the session feels usable—not to build the rest of Phase 26 unless you explicitly expand scope.
 
 **Authoritative specs:** `docs/human/stratos-design.md`, `docs/human/runtime-persistence-contract.md`, `docs/human/coding-checklist.md` (Phases **24**, **25**, and optionally **26**).
 
-**Already fixed in tree (verify in QEMU, do not re-implement blindly):**
+**Already fixed in tree (verify on hardware, do not re-implement blindly):**
 
 1. **Panel vs focus Z-order:** `stratvm` uses separate `wlr_scene_tree` layers (`layers_bg` … `layers_overlay` in `server.h`); XDG views live under `layers_normal` and `focus_view` only raises within that tree (`stratvm/src/main.c`).
 2. **Interactive move:** Titlebar drag + `xdg_toplevel` `request_move` + `stratwm_apply_move_grab` / `grabbed_view` exist in `stratvm/src/main.c`.
@@ -63,7 +63,7 @@ Implement or complete checklist items where they are still open:
 ## Definition of done
 
 1. **Checklist** `docs/human/coding-checklist.md`: update Phase **24** / **25** checkboxes to match reality; add short notes for any deferred items.
-2. **QEMU:** boot, focus cycles between **stratterm** (or another client) and **panel** — panel **never** covered by focused tiled/floating clients after your stacking fix.
+2. **Session:** focus cycles between **stratterm** (or another client) and **panel** — panel **never** covered by focused tiled/floating clients after your stacking fix.
 3. **Floating window:** user can **drag by titlebar** to reposition; release ends grab cleanly.
 4. **Brief summary** in your PR or final message: files touched, protocol/layer decisions, any new config keys with examples.
 
