@@ -33,11 +33,13 @@ End-to-end flow (kernel in `linux/`, outputs under `out/`). The script **builds 
 | Area | Fedora / RHEL-style | Debian / Ubuntu-style |
 |------|---------------------|------------------------|
 | **stratboot** (UEFI) | `gnu-efi-devel` | `gnu-efi` |
-| **stratvm** (Wayland) | `wlroots-devel`, `wayland-devel`, `wayland-protocols-devel`, `libxkbcommon-devel`, `pixman-devel`, `libinput-devel`, `libevdev-devel` | `libwlroots-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`, `libpixman-1-dev`, `libinput-dev`, `libevdev-dev` |
+| **stratvm** (Wayland) | `wlroots-devel`, `wlr-protocols-devel` (XML for `wayland-scanner`), `wayland-devel`, `wayland-protocols-devel`, `libxkbcommon-devel`, `pixman-devel`, `libinput-devel`, `libevdev-devel` | `libwlroots-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`, `libpixman-1-dev`, `libinput-dev`, `libevdev-dev` — if `wlr-protocols` is missing, clone [wlroots/wlr-protocols](https://gitlab.freedesktop.org/wlroots/wlr-protocols) to `/usr/local/share/wlr-protocols` (see CI workflow) |
 | **sysroot initramfs** | `cpio` (usually `cpio` package) | `cpio` |
 | **Kernel build** (`linux/`) | `flex`, `bison`, `openssl-devel`, `elfutils-libelf-devel`, `bc`, `openssl`, `perl` | `flex`, `bison`, `libssl-dev`, `libelf-dev`, `bc`, `openssl`, `perl` |
 
 Install the matching row before building that subtree; `./build-all-and-run.sh` expects **cpio**, **gzip**, and **erofs** userspace (`erofs-utils` / `mkfs.erofs`) up front.
+
+**Arch Linux:** install **`base-devel`**, **`pkgconf`** (provides `pkg-config`; needed for `stratvm/Makefile`), and **`wlroots0.19`** — **stratvm** tracks the wlroots **0.19** API (there is no unversioned `wlroots` package; do not use `wlroots0.17` for stratvm). Optional kernel tooling: **`pahole`** (not `dwarves`).
 
 **Disk helpers** (called from the build script; GPT layout matches StratBoot + `sysroot/initramfs-init.c`):
 

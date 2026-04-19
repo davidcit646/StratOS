@@ -29,7 +29,12 @@
 #include <wlr/backend/multi.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+/* wlroots ≤0.17: separate header. Newer releases fold surface into compositor.h. */
+#if defined(__has_include)
+#if __has_include(<wlr/types/wlr_surface.h>)
 #include <wlr/types/wlr_surface.h>
+#endif
+#endif
 #ifdef STRATWM_HAVE_WLR_SUBCOMPOSITOR
 #include <wlr/types/wlr_subcompositor.h>
 #endif

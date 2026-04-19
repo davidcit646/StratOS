@@ -2,32 +2,99 @@ CC ?= cc
 PKG_CONFIG ?= pkg-config
 WAYLAND_SCANNER ?= wayland-scanner
 
-WLROOTS_PKG := $(shell \
-	if $(PKG_CONFIG) --exists wlroots; then echo wlroots; \
-	elif $(PKG_CONFIG) --exists wlroots-0.19; then echo wlroots-0.19; \
-	elif $(PKG_CONFIG) --exists wlroots-0.18; then echo wlroots-0.18; \
-	elif $(PKG_CONFIG) --exists wlroots-0.17; then echo wlroots-0.17; \
-	elif $(PKG_CONFIG) --exists wlroots-0.20; then echo wlroots-0.20; \
-	elif $(PKG_CONFIG) --exists wlroots-0.21; then echo wlroots-0.21; \
-	elif $(PKG_CONFIG) --exists wlroots-0.22; then echo wlroots-0.22; \
-	else echo; fi)
+# .pc locations: Debian/Ubuntu use /usr/lib/pkgconfig/wlroots-0.17.pc.
+# Arch installs /usr/lib/wlroots0.17/pkgconfig/wlroots.pc (package name "wlroots", not "wlroots-0.17").
+ARCH_WLR_PKGCONFIG := $(subst $(space),:,$(wildcard /usr/lib/wlroots0.*/pkgconfig))
+# Fedora/RHEL use /usr/lib64/pkgconfig; Debian uses /usr/lib/x86_64-linux-gnu/pkgconfig
+export PKG_CONFIG_PATH := $(PKG_CONFIG_PATH):/usr/lib/pkgconfig:/usr/lib64/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:$(ARCH_WLR_PKGCONFIG)
 
-ifeq ($(strip $(WLROOTS_PKG)),)
-$(error wlroots pkg-config not found — install wlroots dev (e.g. Fedora wlroots-devel, Debian libwlroots-dev). Tried: wlroots, wlroots-0.17 … 0.22)
+# Prefer libraries installed to ~/.local (e.g. Meson --prefix=$HOME/.local after building wlroots from source).
+STRATVM_USE_LOCAL_PREFIX ?= 0
+ifeq ($(STRATVM_USE_LOCAL_PREFIX),1)
+export PKG_CONFIG_PATH := $(HOME)/.local/share/pkgconfig:$(HOME)/.local/lib/x86_64-linux-gnu/pkgconfig:$(HOME)/.local/lib/pkgconfig:$(PKG_CONFIG_PATH)
+export PATH := $(HOME)/.local/bin:$(PATH)
 endif
 
-# wlr_subcompositor (wlroots >= 0.18); omit on older wlroots (e.g. 0.17).
+# Optional: link against wlroots built from the git submodule (see target wlroots-build).
+# Usage: make wlroots-build && make STRATVM_BUNDLED_WLROOTS=1
+STRATVM_BUNDLED_WLROOTS ?= 0
+WLROOTS_SRC := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/wlroots)
+ifeq ($(STRATVM_BUNDLED_WLROOTS),1)
+export PKG_CONFIG_PATH := $(WLROOTS_SRC)/build:$(WLROOTS_SRC)/build/meson-private:$(PKG_CONFIG_PATH)
+endif
+
+ifeq ($(shell command -v $(PKG_CONFIG) >/dev/null 2>&1 && echo ok),)
+$(error pkg-config not found — install pkgconf: Arch: sudo pacman -S pkgconf | Debian: sudo apt install pkg-config)
+endif
+
+# Prefer newest compatible wlroots; bare "wlroots" last (Arch's .pc is named wlroots.pc inside wlroots0.17/).
+# Fallback: any wlroots*.pc under /usr/lib/pkgconfig or Arch versioned pkgconfig dirs.
+WLROOTS_PKG := $(shell \
+	for p in wlroots-0.22 wlroots-0.21 wlroots-0.20 wlroots-0.19 wlroots-0.18 wlroots-0.17 wlroots; do \
+		$(PKG_CONFIG) --exists "$$p" 2>/dev/null && echo "$$p" && exit 0; \
+	done; \
+	for f in /usr/lib/pkgconfig/wlroots*.pc /usr/lib64/pkgconfig/wlroots*.pc /usr/lib/wlroots0.*/pkgconfig/wlroots.pc; do \
+		[ -f "$$f" ] || continue; \
+		b=$$(basename "$$f" .pc); \
+		$(PKG_CONFIG) --exists "$$b" 2>/dev/null && echo "$$b" && exit 0; \
+	done; \
+	exit 1)
+
+ifeq ($(strip $(WLROOTS_PKG)),)
+$(error wlroots pkg-config not found — install wlroots (Arch: sudo pacman -S wlroots0.17) and pkgconf. \
+	Arch uses pkg name "wlroots" under /usr/lib/wlroots0.17/pkgconfig/ — this Makefile adds that to PKG_CONFIG_PATH.)
+endif
+
+# Header root must match the library pkg-config selects (avoid mixing trees from wildcards).
+# Meson wlroots uses Cflags: -I${includedir}/wlroots-0.19 (not plain includedir); prefer that path.
+WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --cflags-only-I $(WLROOTS_PKG) 2>/dev/null | tr ' ' '\n' | sed -n '/^-I.*wlroots/s/^-I//p' | head -1)
+ifeq ($(strip $(WLR_INCLUDEDIR)),)
 WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --variable=includedir $(WLROOTS_PKG) 2>/dev/null)
-ifneq ($(WLR_INCLUDEDIR),)
+endif
+ifeq ($(strip $(WLR_INCLUDEDIR)),)
+WLR_COMPOSITOR_H := $(firstword $(sort $(wildcard \
+	/usr/include/wlroots-0.*/wlr/types/wlr_compositor.h \
+	/usr/include/wlroots0.*/wlr/types/wlr_compositor.h \
+	/usr/include/wlroots/wlr/types/wlr_compositor.h \
+	$(HOME)/.local/include/wlroots-0.*/wlr/types/wlr_compositor.h)))
+ifeq ($(WLR_COMPOSITOR_H),)
+WLR_COMPOSITOR_H := $(shell find $(HOME)/.local/include /usr/include /usr/local/include -path '*/wlr/types/wlr_compositor.h' 2>/dev/null | head -1)
+endif
+WLR_INCLUDEDIR := $(patsubst %/wlr/types/wlr_compositor.h,%,$(WLR_COMPOSITOR_H))
+endif
+ifeq ($(strip $(WLR_INCLUDEDIR)),)
+$(error wlroots headers not found — $(PKG_CONFIG) has no includedir for $(WLROOTS_PKG), and no .../wlr/types/wlr_compositor.h under /usr/include. \
+	Install wlroots dev headers (Debian: libwlroots-dev | Arch: wlroots0.17).)
+endif
+ifeq ($(wildcard $(WLR_INCLUDEDIR)/wlr/types/wlr_compositor.h),)
+$(error wlroots compositor header missing at $(WLR_INCLUDEDIR)/wlr/types/wlr_compositor.h — broken or partial install)
+endif
+# Ensure the compiler sees this tree first (pkg-config --cflags also adds -I; duplicate is harmless).
+CPPFLAGS += -I$(WLR_INCLUDEDIR)
 ifneq ($(wildcard $(WLR_INCLUDEDIR)/wlr/types/wlr_subcompositor.h),)
 CPPFLAGS += -DSTRATWM_HAVE_WLR_SUBCOMPOSITOR=1
 endif
+
+WL_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols 2>/dev/null)
+ifeq ($(strip $(WL_PROTO_DIR)),)
+WL_PROTO_DIR := /usr/share/wayland-protocols
 endif
 
-WL_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
-WLR_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols 2>/dev/null)
-ifeq ($(strip $(WLR_PROTO_DIR)),)
-WLR_PROTO_DIR := /usr/share/wlr-protocols
+# swaywm/wlr-protocols XMLs for wayland-scanner — not always registered in pkg-config.
+# Override: make WLR_PROTO_DIR=/path/to/wlr-protocols
+WLR_PROTO_CAND := $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols 2>/dev/null)
+ifeq ($(strip $(WLR_PROTO_CAND)),)
+WLR_PROTO_CAND := $(firstword $(wildcard \
+	/usr/share/wlr-protocols \
+	/usr/local/share/wlr-protocols \
+	$(HOME)/.local/share/wlr-protocols))
+endif
+WLR_PROTO_DIR ?= $(WLR_PROTO_CAND)
+WLR_LAYER_XML := $(WLR_PROTO_DIR)/unstable/wlr-layer-shell-unstable-v1.xml
+ifeq ($(wildcard $(WLR_LAYER_XML)),)
+$(error wlr-protocols not found (need $(WLR_LAYER_XML)). Fedora: dnf install wlr-protocols-devel \
+	(not wlr-protocols). Else: git clone --depth=1 https://gitlab.freedesktop.org/wlroots/wlr-protocols.git \
+	/usr/local/share/wlr-protocols — or set WLR_PROTO_DIR to the clone path)
 endif
 PKGS := $(WLROOTS_PKG) wayland-server xkbcommon pixman-1 libinput libevdev
 
@@ -41,17 +108,25 @@ OBJ := $(SRC:.c=.o)
 BIN := stratwm
 ROOTFS_BIN_DIR ?= ../out/phase7/rootfs-minimal/bin
 
-.PHONY: all clean install
+.PHONY: all clean install wlroots-build
 
 all: $(BIN)
+
+# Build wlroots from ./wlroots (submodule), then: make STRATVM_BUNDLED_WLROOTS=1
+wlroots-build:
+	cd "$(WLROOTS_SRC)" && meson setup build -Dexamples=false -Dtests=false && meson compile -C build
 
 xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) server-header $(WL_PROTO_DIR)/stable/xdg-shell/xdg-shell.xml $@
 
 wlr-layer-shell-unstable-v1-protocol.h:
-	$(WAYLAND_SCANNER) server-header $(WLR_PROTO_DIR)/unstable/wlr-layer-shell-unstable-v1.xml $@
+	$(WAYLAND_SCANNER) server-header $(WLR_LAYER_XML) $@
 
 src/main.o: $(PROTO_HEADERS)
+
+# Explicit rule so CPPFLAGS (wlroots -I and -D) are never dropped vs default %.o rules.
+%.o: %.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LDLIBS)

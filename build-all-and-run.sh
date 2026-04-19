@@ -106,6 +106,8 @@ if [ $SKIP_KERNEL -eq 0 ]; then
     
     # Detect GCC version for compatibility
     EXTRA_MAKE_ARGS=""
+    CC_SHIM_DIR=""
+    BC_SHIM_DIR=""
     CC_PATH="${CC:-cc}"
     if command -v "$CC_PATH" >/dev/null 2>&1; then
         CC_VERSION="$($CC_PATH -dumpfullversion -dumpversion 2>/dev/null || true)"
@@ -174,7 +176,20 @@ cd "$REPO_ROOT/stratvm"
 if [ $CLEAN_BUILD -eq 1 ]; then
     make clean
 fi
-make -j$(nproc)
+# stratvm tracks wlroots 0.19.x API (see stratvm/Makefile). Prefer system >= 0.19; else build stratvm/wlroots.
+if pkg-config --exists 'wlroots >= 0.19' 2>/dev/null; then
+    make -j"$(nproc)"
+else
+    log_warn "wlroots >= 0.19 not found (Arch: pacman -S wlroots0.19). Building bundled stratvm/wlroots..."
+    if [ ! -f "$REPO_ROOT/stratvm/wlroots/meson.build" ]; then
+        log_error "stratvm/wlroots is missing — add the wlroots 0.19 source tree there, or install wlroots >= 0.19."
+        exit 1
+    fi
+    require_cmd meson
+    require_cmd ninja
+    make wlroots-build
+    make -j"$(nproc)" STRATVM_BUNDLED_WLROOTS=1
+fi
 log_ok "stratvm built"
 
 # ============================================================================
