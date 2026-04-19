@@ -20,7 +20,7 @@ pub struct PanelSection {
     pub size: u32,
     pub opacity: f64,
     pub blur: bool,
-    /// Reserved for future scaled panel chrome (default 1.0).
+    /// Panel bitmap scale multiplier (`1.0`..`4.0`, rounded to integer steps).
     pub font_scale: f32,
 }
 

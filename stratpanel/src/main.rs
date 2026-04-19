@@ -4,20 +4,36 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use stratlayer::{
-    Event, Interface,
-    WlCompositor, WlDisplay, WlRegistry, WlSeat, WlShm, WlShmPool, WlSurface,
-    ZwlrLayerShellV1, ZwlrLayerSurfaceV1, LAYER_TOP, ANCHOR_TOP, ANCHOR_LEFT, ANCHOR_RIGHT,
-    ShmPool, ShmBuffer,
-    WaylandClient,
+    Event, Interface, ShmBuffer, ShmPool, WaylandClient, WaylandSocket, WlCompositor, WlDisplay,
+    WlRegistry, WlSeat, WlShm, WlShmPool, WlSurface, ZwlrLayerShellV1, ZwlrLayerSurfaceV1,
+    ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_TOP, LAYER_TOP,
 };
 
+mod clock;
 mod config;
 mod ipc;
-mod clock;
 mod textinput;
 
-fn draw_text(buf: &mut [u8], stride: u32, panel_width: i32, panel_height: i32,
-             x: i32, y: i32, text: &str, color: u32) {
+/// SHM pixels are authored upright at scale 1; align pending wl_surface state before commit.
+#[inline]
+fn surface_prepare_shm_commit(surface_id: u32, socket: &WaylandSocket) {
+    let s = WlSurface::new(surface_id);
+    s.set_buffer_transform(0, socket); // WL_OUTPUT_TRANSFORM_NORMAL
+    s.set_buffer_scale(1, socket);
+}
+
+fn draw_text(
+    buf: &mut [u8],
+    stride: u32,
+    panel_width: i32,
+    panel_height: i32,
+    x: i32,
+    y: i32,
+    text: &str,
+    color: u32,
+    scale: i32,
+) {
+    let scale = scale.max(1);
     const FONT: [(char, [u8; 7]); 95] = [
         ('0', [0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00, 0x00]),
         ('1', [0x00, 0x42, 0x7F, 0x40, 0x00, 0x00, 0x00]),
@@ -121,34 +137,50 @@ fn draw_text(buf: &mut [u8], stride: u32, panel_width: i32, panel_height: i32,
 
     for ch in text.chars() {
         if ch == ' ' {
-            cursor_x += 6;
+            cursor_x += 6 * scale;
             continue;
         }
 
         let glyph = FONT.iter().find(|(c, _)| *c == ch);
-        if let Some((_, rows)) = glyph {
-            for row_idx in 0..7 {
-                let row = rows[row_idx];
-                for col_idx in 0..5 {
-                    if (row >> (4 - col_idx)) & 1 == 1 {
-                        let px = cursor_x + col_idx as i32;
-                        let py = y + row_idx as i32;
-                        if px >= 0 && px < panel_width && py >= 0 && py < panel_height {
-                            let offset = (py as u32 * stride + px as u32 * 4) as usize;
-                            if offset + 4 <= buf.len() {
-                                buf[offset..offset + 4].copy_from_slice(&bytes);
+        if let Some((_, cols)) = glyph {
+            // FONT bytes are column-major: first 5 bytes are columns, LSB is top pixel.
+            for col_idx in 0..5 {
+                let col = cols[col_idx];
+                for row_idx in 0..7 {
+                    if (col >> row_idx) & 1 == 1 {
+                        let px0 = cursor_x + col_idx as i32 * scale;
+                        let py0 = y + row_idx as i32 * scale;
+                        for sy in 0..scale {
+                            for sx in 0..scale {
+                                let px = px0 + sx;
+                                let py = py0 + sy;
+                                if px >= 0 && px < panel_width && py >= 0 && py < panel_height {
+                                    let offset = (py as u32 * stride + px as u32 * 4) as usize;
+                                    if offset + 4 <= buf.len() {
+                                        buf[offset..offset + 4].copy_from_slice(&bytes);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        cursor_x += 6;
+        cursor_x += 6 * scale;
     }
 }
 
-fn fill_rect(buf: &mut [u8], stride: u32, panel_width: i32, panel_height: i32,
-             x: i32, y: i32, w: i32, h: i32, color: u32) {
+fn fill_rect(
+    buf: &mut [u8],
+    stride: u32,
+    panel_width: i32,
+    panel_height: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+) {
     let bytes = color.to_le_bytes();
     let x0 = x.max(0);
     let y0 = y.max(0);
@@ -169,6 +201,28 @@ const PEEK_H: u32 = 4;
 const BTN_LEFT: u32 = 0x110;
 /// `wl_pointer.axis` value 0 — vertical scroll.
 const AXIS_SCROLL_VERTICAL: u32 = 0;
+
+const PANEL_BG_RGB: u32 = 0x0E1728;
+const PANEL_SURFACE_RGB: u32 = 0x162338;
+const PANEL_SURFACE_ALT_RGB: u32 = 0x1D2C45;
+const PANEL_BORDER_RGB: u32 = 0x2E4569;
+const PANEL_ACCENT_RGB: u32 = 0x73BCFF;
+const PANEL_ACCENT_SOFT_RGB: u32 = 0x2D4870;
+const PANEL_TEXT_MUTED: u32 = 0xFF9FB2D0;
+const PANEL_TEXT_MAIN: u32 = 0xFFF1F6FF;
+
+fn quantize_font_scale(scale: f32) -> i32 {
+    if !scale.is_finite() {
+        return 1;
+    }
+    scale.clamp(1.0, 4.0).round() as i32
+}
+
+#[inline]
+fn panel_rgba(opacity: f64, rgb: u32) -> u32 {
+    let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (alpha << 24) | (rgb & 0x00FF_FFFF)
+}
 
 /// Workspace buttons shown in the panel (respects switcher enable, label mode, max visible).
 fn visible_workspaces(
@@ -197,6 +251,8 @@ fn visible_workspaces(
 
 /// Geometry for the visible top bar (shared by draw + pointer handlers).
 struct TopBarLayout {
+    glyph_advance: i32,
+    glyph_h: i32,
     input_x: i32,
     input_w: i32,
     tray_slot: i32,
@@ -216,12 +272,16 @@ impl TopBarLayout {
         clock_text: &str,
         ws_count: usize,
         config: &config::PanelConfig,
+        scale: i32,
     ) -> Self {
-        let input_x = 8i32;
-        let input_w = 200i32;
-        let pinned_left = input_x + input_w + 8;
-        let clock_tw = clock_text.len() as i32 * 6;
-        let tray_slot = 22i32;
+        let scale = scale.max(1);
+        let glyph_advance = 6 * scale;
+        let glyph_h = 7 * scale;
+        let input_x = 12i32 * scale;
+        let input_w = (panel_width / 4).clamp(180 * scale, 360 * scale);
+        let pinned_left = input_x + input_w + 10 * scale;
+        let clock_tw = clock_text.len() as i32 * glyph_advance;
+        let tray_slot = 26i32 * scale;
         let tray_n = [
             config.tray.show_network,
             config.tray.show_volume,
@@ -232,20 +292,26 @@ impl TopBarLayout {
         .filter(|&&x| x)
         .count() as i32;
         let tray_w = if tray_n > 0 {
-            tray_n * tray_slot + 4
+            tray_n * tray_slot + 6 * scale
         } else {
             0i32
         };
-        let clock_x = panel_width - clock_tw - 8;
-        let tray_x = clock_x - 8 - tray_w;
+        let clock_x = panel_width - clock_tw - 14 * scale;
+        let tray_x = clock_x - 10 * scale - tray_w;
         let pinned_x = pinned_left;
-        let pinned_max_w = (tray_x - 8 - pinned_x).max(0);
-        let pin_cell = 32i32;
-        let pin_gap = 4i32;
-        let btn_w = 40i32;
-        let ws_total = ws_count as i32 * (btn_w + 4);
+        let pinned_max_w = (tray_x - 12 * scale - pinned_x).max(0);
+        let pin_cell = 34i32 * scale;
+        let pin_gap = 6i32 * scale;
+        let btn_w = 46i32 * scale;
+        let ws_total = if ws_count == 0 {
+            0
+        } else {
+            ws_count as i32 * (btn_w + 6 * scale) - 6 * scale
+        };
         let ws_start_x = (panel_width - ws_total) / 2;
         Self {
+            glyph_advance,
+            glyph_h,
             input_x,
             input_w,
             tray_slot,
@@ -279,8 +345,10 @@ fn pointer_in_tray_volume_cell(
     vis_h: i32,
     layout: &TopBarLayout,
     cfg: &config::PanelConfig,
+    scale: i32,
 ) -> bool {
-    if py < 2 || py >= vis_h - 2 {
+    let pad = 2 * scale.max(1);
+    if py < pad || py >= vis_h - pad {
         return false;
     }
     let Some((vx, w)) = layout.volume_cell_bounds(cfg) else {
@@ -342,23 +410,35 @@ fn draw_network_icon(
     state: NetworkTrayState,
     live: u32,
     stub: u32,
+    scale: i32,
 ) {
-    const ICON_W: i32 = 14;
-    const ICON_H: i32 = 10;
+    let scale = scale.max(1);
+    let icon_w: i32 = 14 * scale;
+    let icon_h: i32 = 10 * scale;
     let content_h = vis_h - 4;
-    let ox = cell_left + (cell_w - ICON_W) / 2;
-    let oy = 2 + (content_h - ICON_H) / 2;
+    let ox = cell_left + (cell_w - icon_w) / 2;
+    let oy = 2 + (content_h - icon_h) / 2;
     match state {
         NetworkTrayState::Unknown => {
-            let tx = ox + (ICON_W - 6) / 2;
-            let ty = oy + (ICON_H - 7) / 2;
-            draw_text(buf, stride, panel_width, panel_height, tx, ty, "?", stub);
+            let tx = ox + (icon_w - 6 * scale) / 2;
+            let ty = oy + (icon_h - 7 * scale) / 2;
+            draw_text(
+                buf,
+                stride,
+                panel_width,
+                panel_height,
+                tx,
+                ty,
+                "?",
+                stub,
+                scale,
+            );
         }
         NetworkTrayState::Connected => {
-            let bar_w = 2i32;
-            let gap = 2i32;
-            let heights = [3i32, 5, 7, 9];
-            let base = oy + ICON_H;
+            let bar_w = 2i32 * scale;
+            let gap = 2i32 * scale;
+            let heights = [3i32, 5, 7, 9].map(|v| v * scale);
+            let base = oy + icon_h;
             for (i, h) in heights.iter().enumerate() {
                 let bx = ox + i as i32 * (bar_w + gap);
                 let by = base - *h;
@@ -376,10 +456,10 @@ fn draw_network_icon(
             }
         }
         NetworkTrayState::Disconnected => {
-            let bar_w = 2i32;
-            let gap = 2i32;
-            let h = 3i32;
-            let base = oy + ICON_H;
+            let bar_w = 2i32 * scale;
+            let gap = 2i32 * scale;
+            let h = 3i32 * scale;
+            let base = oy + icon_h;
             for i in 0..4i32 {
                 let bx = ox + i * (bar_w + gap);
                 let by = base - h;
@@ -426,7 +506,10 @@ fn tray_battery_label() -> String {
 
 /// ALSA **Master** via `amixer` (alsa-utils). Label: `Vm` = muted, `V00`–`V99` = unmuted %, `V~` = no backend.
 fn tray_volume_label() -> String {
-    let Ok(output) = Command::new("amixer").args(["-M", "get", "Master"]).output() else {
+    let Ok(output) = Command::new("amixer")
+        .args(["-M", "get", "Master"])
+        .output()
+    else {
         return "V~".to_string();
     };
     if !output.status.success() {
@@ -531,13 +614,43 @@ fn launch_detached(path: &str) {
     }
 }
 
+fn launch_from_input(input: &str) {
+    let cmd = input.trim();
+    if cmd.is_empty() {
+        return;
+    }
+    if cmd.contains('\0') {
+        eprintln!("stratpanel: launcher command contains NUL byte");
+        return;
+    }
+    let wayland = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run".into());
+    let path = std::env::var("PATH")
+        .unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+    if let Err(e) = Command::new("/bin/sh")
+        .arg("-lc")
+        .arg(cmd)
+        .env("WAYLAND_DISPLAY", wayland)
+        .env("XDG_RUNTIME_DIR", runtime)
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        eprintln!("stratpanel: launcher command failed `{}`: {}", cmd, e);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 1: Connect to Wayland
     let mut client = WaylandClient::new()?;
 
     // Setup: send get_registry using allocate() so next_id advances past it
     let registry_id = client.registry().allocate();
-    client.registry().set_interface(registry_id, Interface::WlRegistry);
+    client
+        .registry()
+        .set_interface(registry_id, Interface::WlRegistry);
     WlDisplay::new(1).get_registry(registry_id, client.socket());
 
     // Step 2: Roundtrip to collect RegistryGlobal events
@@ -545,6 +658,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration
     let config = config::PanelConfig::load();
+    let panel_font_scale = quantize_font_scale(config.panel.font_scale);
+    let panel_size_px = (config.panel.size as i32).max(20 * panel_font_scale);
 
     // Connect to stratvm IPC
     let mut ipc = ipc::IpcClient::connect();
@@ -556,7 +671,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut seat_name: Option<u32> = None;
 
     for event in &globals {
-        if let Event::RegistryGlobal { name, interface, .. } = event {
+        if let Event::RegistryGlobal {
+            name, interface, ..
+        } = event
+        {
             match interface.as_str() {
                 "wl_compositor" => compositor_name = Some(*name),
                 "wl_shm" => shm_name = Some(*name),
@@ -573,8 +691,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bind wl_compositor
     let compositor_id = client.registry().allocate();
-    client.registry().set_interface(compositor_id, Interface::WlCompositor);
-    WlRegistry::new(registry_id).bind(compositor_name, "wl_compositor", 4, compositor_id, client.socket());
+    client
+        .registry()
+        .set_interface(compositor_id, Interface::WlCompositor);
+    /* v5: wl_surface.offset; v4: damage_buffer — use buffer-space damage + explicit transform/scale. */
+    WlRegistry::new(registry_id).bind(
+        compositor_name,
+        "wl_compositor",
+        5,
+        compositor_id,
+        client.socket(),
+    );
 
     // Bind wl_shm
     let shm_id = client.registry().allocate();
@@ -584,7 +711,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bind zwlr_layer_shell_v1
     let layer_shell_id = client.registry().allocate();
     // No Interface variant for ZwlrLayerShellV1 in the enum; use Unknown
-    WlRegistry::new(registry_id).bind(layer_shell_name, "zwlr_layer_shell_v1", 4, layer_shell_id, client.socket());
+    WlRegistry::new(registry_id).bind(
+        layer_shell_name,
+        "zwlr_layer_shell_v1",
+        4,
+        layer_shell_id,
+        client.socket(),
+    );
 
     // Bind wl_seat
     let seat_id = client.registry().allocate();
@@ -594,17 +727,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get pointer from seat
     let pointer_id = client.registry().allocate();
-    client.registry().set_interface(pointer_id, Interface::WlPointer);
+    client
+        .registry()
+        .set_interface(pointer_id, Interface::WlPointer);
     WlSeat::new(seat_id).get_pointer(pointer_id, client.socket());
 
     // Get keyboard from seat
     let keyboard_id = client.registry().allocate();
-    client.registry().set_interface(keyboard_id, Interface::WlKeyboard);
+    client
+        .registry()
+        .set_interface(keyboard_id, Interface::WlKeyboard);
     WlSeat::new(seat_id).get_keyboard(keyboard_id, client.socket());
 
     // Step 3: Create wl_surface
     let surface_id = client.registry().allocate();
-    client.registry().set_interface(surface_id, Interface::WlSurface);
+    client
+        .registry()
+        .set_interface(surface_id, Interface::WlSurface);
     WlCompositor::new(compositor_id).create_surface(surface_id, client.socket());
 
     // Step 4: Create layer surface
@@ -621,17 +760,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 5: Configure layer surface
     let ls = ZwlrLayerSurfaceV1::new(layer_surface_id);
-    ls.set_size(0, config.panel.size, client.socket());
+    ls.set_size(0, panel_size_px as u32, client.socket());
     ls.set_anchor(ANCHOR_TOP | ANCHOR_LEFT | ANCHOR_RIGHT, client.socket());
-    ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+    ls.set_exclusive_zone(panel_size_px, client.socket());
     ls.set_keyboard_interactivity(1, client.socket());
+    surface_prepare_shm_commit(surface_id, client.socket());
     WlSurface::new(surface_id).commit(client.socket());
 
     // Step 6: Wait for LayerSurfaceConfigure
     let (confirmed_width, confirmed_height);
     'configure: loop {
         for event in client.poll()? {
-            if let Event::LayerSurfaceConfigure { serial, width, height, .. } = event {
+            if let Event::LayerSurfaceConfigure {
+                serial,
+                width,
+                height,
+                ..
+            } = event
+            {
                 ls.ack_configure(serial, client.socket());
                 confirmed_width = width;
                 confirmed_height = height;
@@ -641,8 +787,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Step 7: Allocate SHM buffer (full design height; compositor clips when autohide uses PEEK_H)
-    let panel_width = if confirmed_width == 0 { 1920 } else { confirmed_width };
-    let buffer_draw_h = config.panel.size as i32;
+    let panel_width = if confirmed_width == 0 {
+        1920
+    } else {
+        confirmed_width
+    };
+    let buffer_draw_h = panel_size_px;
     let stride = panel_width * 4;
     let size = (stride * buffer_draw_h as u32) as usize;
 
@@ -653,7 +803,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shm_buffer = ShmBuffer::new(pool, 0, panel_width, buffer_draw_h as u32, stride);
     {
         let data = shm_buffer.data_mut();
-        let color = ((config.panel.opacity * 255.0) as u32) << 24 | 0x2B2B2B;
+        let color = panel_rgba(config.panel.opacity, PANEL_BG_RGB);
         let bytes = color.to_le_bytes();
         for chunk in data.chunks_exact_mut(4) {
             chunk[0] = bytes[0];
@@ -665,12 +815,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create wl_shm_pool
     let pool_id = client.registry().allocate();
-    client.registry().set_interface(pool_id, Interface::WlShmPool);
+    client
+        .registry()
+        .set_interface(pool_id, Interface::WlShmPool);
     WlShm::new(shm_id).create_pool(pool_id, shm_fd, size as i32, client.socket());
 
     // Create wl_buffer from pool
     let buffer_id = client.registry().allocate();
-    client.registry().set_interface(buffer_id, Interface::WlBuffer);
+    client
+        .registry()
+        .set_interface(buffer_id, Interface::WlBuffer);
     WlShmPool::new(pool_id).create_buffer(
         buffer_id,
         0,
@@ -682,8 +836,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Step 8: Attach buffer and commit
+    surface_prepare_shm_commit(surface_id, client.socket());
     WlSurface::new(surface_id).attach(buffer_id, 0, 0, client.socket());
-    WlSurface::new(surface_id).damage(0, 0, panel_width as i32, buffer_draw_h, client.socket());
+    WlSurface::new(surface_id).damage_buffer(
+        0,
+        0,
+        panel_width as i32,
+        buffer_draw_h,
+        client.socket(),
+    );
     WlSurface::new(surface_id).commit(client.socket());
 
     let mut layer_surface_height = if confirmed_height == 0 {
@@ -695,6 +856,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.panel.autohide {
         ls.set_size(0, PEEK_H, client.socket());
         ls.set_exclusive_zone(0, client.socket());
+        surface_prepare_shm_commit(surface_id, client.socket());
         WlSurface::new(surface_id).commit(client.socket());
         'peek: loop {
             for event in client.poll()? {
@@ -787,6 +949,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if config.panel.autohide && layer_surface_height > PEEK_H as i32 {
                     ls.set_size(0, PEEK_H, client.socket());
                     ls.set_exclusive_zone(0, client.socket());
+                    surface_prepare_shm_commit(surface_id, client.socket());
                     WlSurface::new(surface_id).commit(client.socket());
                     layer_surface_height = PEEK_H as i32;
                     needs_commit = true;
@@ -801,7 +964,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Clear full drawable buffer
             {
                 let data = shm_buffer.data_mut();
-                let color = ((config.panel.opacity * 255.0) as u32) << 24 | 0x2B2B2B;
+                let color = panel_rgba(config.panel.opacity, PANEL_BG_RGB);
                 let bytes = color.to_le_bytes();
                 for chunk in data.chunks_exact_mut(4) {
                     chunk[0] = bytes[0];
@@ -813,21 +976,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if vis_h <= PEEK_H as i32 {
                 let data = shm_buffer.data_mut();
-                let accent = ((config.panel.opacity * 255.0) as u32) << 24 | 0x5B9BD5;
-                fill_rect(data, stride, panel_width as i32, ph, 0, 0, panel_width as i32, vis_h, accent);
+                let accent = panel_rgba(config.panel.opacity, PANEL_ACCENT_SOFT_RGB);
+                fill_rect(
+                    data,
+                    stride,
+                    panel_width as i32,
+                    ph,
+                    0,
+                    0,
+                    panel_width as i32,
+                    vis_h,
+                    accent,
+                );
             } else {
                 let layout = TopBarLayout::compute(
                     panel_width as i32,
                     &last_clock_text,
                     workspaces.len(),
                     &config,
+                    panel_font_scale,
                 );
-                let input_y = 2i32;
-                let input_h = vis_h - 4;
+                let input_y = 2i32 * panel_font_scale;
+                let input_h = (vis_h - 4 * panel_font_scale).max(layout.glyph_h + 2);
+                let pointer_px = pointer_x as i32;
+                let pointer_py = pointer_y as i32;
 
                 {
                     let data = shm_buffer.data_mut();
-                    let input_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B;
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        0,
+                        0,
+                        panel_width as i32,
+                        vis_h,
+                        panel_rgba(config.panel.opacity, PANEL_SURFACE_RGB),
+                    );
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        0,
+                        0,
+                        panel_width as i32,
+                        1,
+                        panel_rgba(config.panel.opacity, PANEL_BORDER_RGB),
+                    );
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        0,
+                        vis_h - 1,
+                        panel_width as i32,
+                        1,
+                        panel_rgba(config.panel.opacity, PANEL_BORDER_RGB),
+                    );
+                }
+
+                {
+                    let data = shm_buffer.data_mut();
+                    let input_border = panel_rgba(config.panel.opacity, PANEL_BORDER_RGB);
+                    let input_bg = panel_rgba(
+                        config.panel.opacity,
+                        if keyboard_focused {
+                            PANEL_SURFACE_ALT_RGB
+                        } else {
+                            PANEL_BG_RGB
+                        },
+                    );
                     fill_rect(
                         data,
                         stride,
@@ -837,25 +1058,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         input_y,
                         layout.input_w,
                         input_h,
+                        input_border,
+                    );
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        layout.input_x + 1,
+                        input_y + 1,
+                        layout.input_w - 2,
+                        input_h - 2,
                         input_bg,
                     );
 
-                    let display_text = text_input.display_text();
-                    let text_y = input_y + (input_h - 7) / 2;
+                    let input_text_left = layout.input_x + 6 * panel_font_scale;
+                    let input_inner_w = (layout.input_w - 12 * panel_font_scale).max(6);
+                    let visible_chars =
+                        (input_inner_w / layout.glyph_advance.max(1)).max(1) as usize;
+                    text_input.ensure_cursor_visible(visible_chars);
+                    let display_text = text_input.display_text(visible_chars);
+                    let shown = if display_text.is_empty() {
+                        "Launcher / command"
+                    } else {
+                        &display_text
+                    };
+                    let text_y = input_y + (input_h - layout.glyph_h) / 2;
                     draw_text(
                         data,
                         stride,
                         panel_width as i32,
                         ph,
-                        layout.input_x + 4,
+                        input_text_left,
                         text_y,
-                        &display_text,
-                        0xFFFFFFFF,
+                        shown,
+                        if display_text.is_empty() {
+                            PANEL_TEXT_MUTED
+                        } else {
+                            PANEL_TEXT_MAIN
+                        },
+                        panel_font_scale,
                     );
 
                     if keyboard_focused && cursor_visible {
-                        let cursor_x = layout.input_x + 4 + text_input.cursor_pixel_offset();
-                        fill_rect(data, stride, panel_width as i32, ph, cursor_x, text_y, 1, 9, 0xFFFFFFFF);
+                        let cursor_x = input_text_left
+                            + text_input.cursor_pixel_offset(layout.glyph_advance);
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            cursor_x,
+                            text_y - panel_font_scale,
+                            panel_font_scale,
+                            layout.glyph_h + 2 * panel_font_scale,
+                            0xFF73BCFF,
+                        );
                     }
                 }
 
@@ -874,13 +1132,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let data = shm_buffer.data_mut();
                     let clip_r = layout.pinned_x + pinned_max_w;
                     for (i, app) in config.pinned.apps.iter().enumerate() {
-                        let bx = layout.pinned_x
-                            + i as i32 * (layout.pin_cell + layout.pin_gap)
+                        let bx = layout.pinned_x + i as i32 * (layout.pin_cell + layout.pin_gap)
                             - pinned_scroll;
                         if bx + layout.pin_cell < layout.pinned_x || bx >= clip_r {
                             continue;
                         }
-                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x252525;
+                        let hovered = pointer_px >= bx
+                            && pointer_px < bx + layout.pin_cell
+                            && pointer_py >= 2
+                            && pointer_py < vis_h - 2;
+                        let border = panel_rgba(config.panel.opacity, PANEL_BORDER_RGB);
+                        let cell_bg = panel_rgba(
+                            config.panel.opacity,
+                            if hovered {
+                                PANEL_ACCENT_SOFT_RGB
+                            } else {
+                                PANEL_SURFACE_ALT_RGB
+                            },
+                        );
                         fill_rect(
                             data,
                             stride,
@@ -890,19 +1159,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             2,
                             layout.pin_cell,
                             vis_h - 4,
+                            border,
+                        );
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            bx + 1,
+                            3,
+                            layout.pin_cell - 2,
+                            vis_h - 6,
                             cell_bg,
                         );
                         let label = launcher_label(app);
-                        let tx = bx + (layout.pin_cell - label.len() as i32 * 6) / 2;
+                        let tx = bx
+                            + (layout.pin_cell - label.len() as i32 * layout.glyph_advance) / 2;
                         draw_text(
                             data,
                             stride,
                             panel_width as i32,
                             ph,
                             tx,
-                            (vis_h - 7) / 2,
+                            (vis_h - layout.glyph_h) / 2,
                             &label,
-                            0xFFE0E0E0,
+                            if hovered {
+                                PANEL_TEXT_MAIN
+                            } else {
+                                PANEL_TEXT_MUTED
+                            },
+                            panel_font_scale,
                         );
                     }
                 }
@@ -912,61 +1198,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let data = shm_buffer.data_mut();
                     if config.workspace.enabled {
                         if workspaces.is_empty() {
-                            let hint = if ipc.is_connected() {
-                                "WS?"
-                            } else {
-                                "IPC"
-                            };
+                            let hint = if ipc.is_connected() { "WS?" } else { "IPC" };
                             draw_text(
                                 data,
                                 stride,
                                 panel_width as i32,
                                 ph,
                                 layout.ws_start_x.max(8),
-                                (vis_h - 7) / 2,
+                                (vis_h - layout.glyph_h) / 2,
                                 hint,
-                                0xFF666666,
+                                PANEL_TEXT_MUTED,
+                                panel_font_scale,
                             );
                         } else {
                             for (i, (_id, name, focused)) in workspaces.iter().enumerate() {
-                            let bx =
-                                layout.ws_start_x + (i as i32 * (layout.btn_w + 4));
-                            let by = 2;
-                            let button_color = if *focused {
-                                ((config.panel.opacity * 255.0) as u32) << 24 | 0x3B3B3B
-                            } else {
-                                ((config.panel.opacity * 255.0) as u32) << 24 | 0x1B1B1B
-                            };
-                            fill_rect(
-                                data,
-                                stride,
-                                panel_width as i32,
-                                ph,
-                                bx,
-                                by,
-                                layout.btn_w,
-                                button_height,
-                                button_color,
-                            );
-                            let text_x = bx + (layout.btn_w - name.len() as i32 * 6) / 2;
-                            let text_y = by + (button_height - 7) / 2;
-                            draw_text(
-                                data,
-                                stride,
-                                panel_width as i32,
-                                ph,
-                                text_x,
-                                text_y,
-                                name,
-                                0xFFFFFFFF,
-                            );
-                        }
+                                let bx = layout.ws_start_x
+                                    + (i as i32 * (layout.btn_w + 6 * panel_font_scale));
+                                let by = 2;
+                                let hovered = pointer_px >= bx
+                                    && pointer_px < bx + layout.btn_w
+                                    && pointer_py >= by
+                                    && pointer_py < by + button_height;
+                                let button_border =
+                                    panel_rgba(config.panel.opacity, PANEL_BORDER_RGB);
+                                let button_color = if *focused {
+                                    PANEL_ACCENT_SOFT_RGB
+                                } else if hovered {
+                                    PANEL_SURFACE_ALT_RGB
+                                } else {
+                                    PANEL_BG_RGB
+                                };
+                                fill_rect(
+                                    data,
+                                    stride,
+                                    panel_width as i32,
+                                    ph,
+                                    bx,
+                                    by,
+                                    layout.btn_w,
+                                    button_height,
+                                    button_border,
+                                );
+                                fill_rect(
+                                    data,
+                                    stride,
+                                    panel_width as i32,
+                                    ph,
+                                    bx + 1,
+                                    by + 1,
+                                    layout.btn_w - 2,
+                                    button_height - 2,
+                                    panel_rgba(config.panel.opacity, button_color),
+                                );
+                                let text_x = bx
+                                    + (layout.btn_w
+                                        - name.len() as i32 * layout.glyph_advance)
+                                        / 2;
+                                let text_y = by + (button_height - layout.glyph_h) / 2;
+                                draw_text(
+                                    data,
+                                    stride,
+                                    panel_width as i32,
+                                    ph,
+                                    text_x,
+                                    text_y,
+                                    name,
+                                    if *focused {
+                                        PANEL_TEXT_MAIN
+                                    } else {
+                                        PANEL_TEXT_MUTED
+                                    },
+                                    panel_font_scale,
+                                );
+                            }
                         }
                     }
                 }
 
-                let stub_col = 0xFF666666u32;
-                let live_col = 0xFF9BB9B9u32;
+                let stub_col = PANEL_TEXT_MUTED;
+                let live_col = PANEL_ACCENT_RGB | 0xFF000000;
                 let tray_cells: [(bool, &str); 3] = [
                     (config.tray.show_volume, tray_vol_lbl.as_str()),
                     (config.tray.show_updates, "U~"),
@@ -976,7 +1286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let data = shm_buffer.data_mut();
                     let mut tx = layout.tray_x;
                     if config.tray.show_network {
-                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x151515;
+                        let cell_bg = panel_rgba(config.panel.opacity, PANEL_BG_RGB);
                         let cw = layout.tray_slot - 2;
                         fill_rect(
                             data,
@@ -987,6 +1297,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             2,
                             cw,
                             vis_h - 4,
+                            panel_rgba(config.panel.opacity, PANEL_BORDER_RGB),
+                        );
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            tx + 1,
+                            3,
+                            cw - 2,
+                            vis_h - 6,
                             cell_bg,
                         );
                         draw_network_icon(
@@ -1000,6 +1321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tray_net_state,
                             live_col,
                             stub_col,
+                            panel_font_scale,
                         );
                         tx += layout.tray_slot;
                     }
@@ -1009,7 +1331,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         let stubby = label.ends_with('~') || label == "Vm";
                         let col = if stubby { stub_col } else { live_col };
-                        let cell_bg = ((config.panel.opacity * 255.0) as u32) << 24 | 0x151515;
+                        let cell_bg = panel_rgba(config.panel.opacity, PANEL_BG_RGB);
                         fill_rect(
                             data,
                             stride,
@@ -1019,6 +1341,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             2,
                             layout.tray_slot - 2,
                             vis_h - 4,
+                            panel_rgba(config.panel.opacity, PANEL_BORDER_RGB),
+                        );
+                        fill_rect(
+                            data,
+                            stride,
+                            panel_width as i32,
+                            ph,
+                            tx + 1,
+                            3,
+                            layout.tray_slot - 4,
+                            vis_h - 6,
                             cell_bg,
                         );
                         draw_text(
@@ -1026,18 +1359,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             stride,
                             panel_width as i32,
                             ph,
-                            tx + 4,
-                            (vis_h - 7) / 2,
+                            tx + 5 * panel_font_scale,
+                            (vis_h - layout.glyph_h) / 2,
                             label,
                             col,
+                            panel_font_scale,
                         );
                         tx += layout.tray_slot;
                     }
                 }
 
-                let clock_y = (vis_h - 7) / 2;
+                let clock_y = (vis_h - layout.glyph_h) / 2;
                 {
                     let data = shm_buffer.data_mut();
+                    let clock_w =
+                        (last_clock_text.len() as i32 * layout.glyph_advance)
+                            + 12 * panel_font_scale;
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        layout.clock_x - 6 * panel_font_scale,
+                        2,
+                        clock_w,
+                        vis_h - 4,
+                        panel_rgba(config.panel.opacity, PANEL_BORDER_RGB),
+                    );
+                    fill_rect(
+                        data,
+                        stride,
+                        panel_width as i32,
+                        ph,
+                        layout.clock_x - 5 * panel_font_scale,
+                        3,
+                        clock_w - 2,
+                        vis_h - 6,
+                        panel_rgba(config.panel.opacity, PANEL_SURFACE_ALT_RGB),
+                    );
                     draw_text(
                         data,
                         stride,
@@ -1046,12 +1405,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         layout.clock_x,
                         clock_y,
                         &last_clock_text,
-                        0xFFFFFFFF,
+                        PANEL_TEXT_MAIN,
+                        panel_font_scale,
                     );
                 }
             }
 
-            WlSurface::new(surface_id).damage(0, 0, panel_width as i32, vis_h.max(1), client.socket());
+            surface_prepare_shm_commit(surface_id, client.socket());
+            WlSurface::new(surface_id).damage_buffer(
+                0,
+                0,
+                panel_width as i32,
+                vis_h.max(1),
+                client.socket(),
+            );
             WlSurface::new(surface_id).commit(client.socket());
             needs_commit = false;
         }
@@ -1069,28 +1436,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::LayerSurfaceClosed { .. } => return Ok(()),
-                Event::PointerMotion { surface_x, surface_y } => {
+                Event::PointerMotion {
+                    surface_x,
+                    surface_y,
+                } => {
                     pointer_x = surface_x;
                     pointer_y = surface_y;
                     if config.panel.autohide
                         && layer_surface_height <= PEEK_H as i32
                         && pointer_y < (PEEK_H as f64) + 2.0
                     {
-                        ls.set_size(0, config.panel.size, client.socket());
-                        ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+                        ls.set_size(0, panel_size_px as u32, client.socket());
+                        ls.set_exclusive_zone(panel_size_px, client.socket());
+                        surface_prepare_shm_commit(surface_id, client.socket());
                         WlSurface::new(surface_id).commit(client.socket());
                         layer_surface_height = buffer_draw_h;
                         autohide_collapse_at = None;
                         needs_commit = true;
                     }
                 }
-                Event::PointerEnter { surface_x, surface_y } => {
+                Event::PointerEnter {
+                    surface_x,
+                    surface_y,
+                } => {
                     pointer_x = surface_x;
                     pointer_y = surface_y;
                     autohide_collapse_at = None;
                     if config.panel.autohide && layer_surface_height <= PEEK_H as i32 {
-                        ls.set_size(0, config.panel.size, client.socket());
-                        ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+                        ls.set_size(0, panel_size_px as u32, client.socket());
+                        ls.set_exclusive_zone(panel_size_px, client.socket());
+                        surface_prepare_shm_commit(surface_id, client.socket());
                         WlSurface::new(surface_id).commit(client.socket());
                         layer_surface_height = buffer_draw_h;
                         needs_commit = true;
@@ -1116,15 +1491,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &last_clock_text,
                         workspaces.len(),
                         &config,
+                        panel_font_scale,
                     );
+                    let hit_pad = 2 * panel_font_scale;
                     if px >= layout.pinned_x
                         && px < layout.pinned_x + layout.pinned_max_w
-                        && py >= 2
-                        && py < vis_h - 2
+                        && py >= hit_pad
+                        && py < vis_h - hit_pad
                     {
                         pinned_scroll -= (value * 24.0) as i32;
                         needs_commit = true;
-                    } else if pointer_in_tray_volume_cell(px, py, vis_h, &layout, &config) {
+                    } else if pointer_in_tray_volume_cell(
+                        px,
+                        py,
+                        vis_h,
+                        &layout,
+                        &config,
+                        panel_font_scale,
+                    ) {
                         // Wayland: positive axis value ≈ scroll down — invert so wheel-up increases volume.
                         let step = (-value * 3.0).round() as i32;
                         let step = step.clamp(-10, 10);
@@ -1142,8 +1526,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let vis_h = layer_surface_height.min(buffer_draw_h);
 
                         if vis_h <= PEEK_H as i32 {
-                            ls.set_size(0, config.panel.size, client.socket());
-                            ls.set_exclusive_zone(config.panel.size as i32, client.socket());
+                            ls.set_size(0, panel_size_px as u32, client.socket());
+                            ls.set_exclusive_zone(panel_size_px, client.socket());
+                            surface_prepare_shm_commit(surface_id, client.socket());
                             WlSurface::new(surface_id).commit(client.socket());
                             layer_surface_height = buffer_draw_h;
                             needs_commit = true;
@@ -1155,21 +1540,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &last_clock_text,
                             workspaces.len(),
                             &config,
+                            panel_font_scale,
                         );
+                        let hit_pad = 2 * panel_font_scale;
+                        let input_y = hit_pad;
+                        let input_h = (vis_h - hit_pad * 2).max(layout.glyph_h + 2);
 
                         if px >= layout.input_x
                             && px < layout.input_x + layout.input_w
-                            && py >= 2
-                            && py < vis_h - 2
+                            && py >= input_y
+                            && py < input_y + input_h
                         {
                             if !keyboard_focused {
                                 keyboard_focused = true;
                                 ls.set_keyboard_interactivity(1, client.socket());
+                                surface_prepare_shm_commit(surface_id, client.socket());
                                 WlSurface::new(surface_id).commit(client.socket());
                             }
-                            text_input.click_at(px - (layout.input_x + 4));
+                            let visible_chars = ((layout.input_w - 12 * panel_font_scale)
+                                / layout.glyph_advance.max(1))
+                                .max(1) as usize;
+                            text_input.click_at(
+                                px - (layout.input_x + 6 * panel_font_scale),
+                                layout.glyph_advance,
+                                visible_chars,
+                            );
+                            needs_commit = true;
                         } else {
-                            let on_vol = pointer_in_tray_volume_cell(px, py, vis_h, &layout, &config);
+                            let on_vol = pointer_in_tray_volume_cell(
+                                px,
+                                py,
+                                vis_h,
+                                &layout,
+                                &config,
+                                panel_font_scale,
+                            );
                             if on_vol {
                                 volume_toggle_mute();
                                 tray_vol_lbl = tray_volume_label();
@@ -1178,13 +1583,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let pins_content = if config.pinned.apps.is_empty() {
                                     0i32
                                 } else {
-                                    config.pinned.apps.len() as i32 * (layout.pin_cell + layout.pin_gap)
+                                    config.pinned.apps.len() as i32
+                                        * (layout.pin_cell + layout.pin_gap)
                                         - layout.pin_gap
                                 };
                                 let max_scroll = (pins_content - layout.pinned_max_w).max(0);
                                 let scroll = pinned_scroll.clamp(0, max_scroll);
 
-                                if layout.pinned_max_w > 0 && py >= 2 && py < vis_h - 2 {
+                                if layout.pinned_max_w > 0 && py >= hit_pad && py < vis_h - hit_pad {
                                     for (i, app) in config.pinned.apps.iter().enumerate() {
                                         let bx = layout.pinned_x
                                             + i as i32 * (layout.pin_cell + layout.pin_gap)
@@ -1202,11 +1608,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 for (i, (id, _, _)) in workspaces.iter().enumerate() {
-                                    let bx = layout.ws_start_x + i as i32 * (layout.btn_w + 4);
+                                    let bx = layout.ws_start_x
+                                        + i as i32 * (layout.btn_w + 6 * panel_font_scale);
                                     if px >= bx
                                         && px < bx + layout.btn_w
-                                        && py >= 2
-                                        && py < vis_h - 2
+                                        && py >= hit_pad
+                                        && py < vis_h - hit_pad
                                     {
                                         ipc.switch_workspace(*id);
                                         workspaces_raw = ipc.get_workspaces();
@@ -1219,16 +1626,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if keyboard_focused {
                                 keyboard_focused = false;
                                 ls.set_keyboard_interactivity(0, client.socket());
+                                surface_prepare_shm_commit(surface_id, client.socket());
                                 WlSurface::new(surface_id).commit(client.socket());
+                                needs_commit = true;
                             }
                         }
                     }
                 }
                 Event::KeyboardKey { key, state, .. } => {
                     if state == 1 && keyboard_focused {
+                        if key == 28 {
+                            let launch_cmd = text_input.text();
+                            if !launch_cmd.trim().is_empty() {
+                                launch_from_input(&launch_cmd);
+                            }
+                            text_input.clear();
+                            cursor_visible = true;
+                            last_cursor_blink = Instant::now();
+                            needs_commit = true;
+                            continue;
+                        }
                         text_input.handle_key(key);
                         cursor_visible = true;
                         last_cursor_blink = Instant::now();
+                        needs_commit = true;
                     }
                 }
                 Event::KeyboardModifiers { mods_depressed, .. } => {

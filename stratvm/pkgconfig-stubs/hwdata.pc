@@ -1,0 +1,9 @@
+# StratOS: several distros ship /usr/share/hwdata/pnp.ids without a hwdata.pc file.
+# wlroots' DRM backend requires pkg-config "hwdata" with variable pkgdatadir.
+prefix=/usr
+datadir=${prefix}/share
+pkgdatadir=${datadir}/hwdata
+
+Name: hwdata
+Description: PNP ID database (pkg-config stub when the OS omits hwdata.pc)
+Version: 0

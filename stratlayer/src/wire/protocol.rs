@@ -85,6 +85,16 @@ impl Message {
     pub fn parse_args(&self, signature: &str) -> Vec<Argument> {
         Argument::deserialize_args_typed(&self.raw_args, signature)
     }
+
+    /// Parse wire arguments where `h` (file descriptor) placeholders are paired with
+    /// SCM_RIGHTS fds from the same `recvmsg` batch (Wayland `wl_keyboard.keymap`, etc.).
+    pub fn parse_args_with_fds(
+        &self,
+        signature: &str,
+        fds: &mut std::vec::IntoIter<RawFd>,
+    ) -> Vec<Argument> {
+        Argument::deserialize_args_typed_with_fds(&self.raw_args, signature, fds)
+    }
 }
 
 impl Argument {
@@ -203,6 +213,146 @@ impl Argument {
                     if offset + 4 > data.len() { break; }
                     let v = i32::from_le_bytes([
                         data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                    ]);
+                    args.push(Argument::Fixed(v));
+                    offset += 4;
+                }
+                _ => {
+                    offset += 4;
+                }
+            }
+        }
+
+        args
+    }
+
+    pub fn deserialize_args_typed_with_fds(
+        data: &[u8],
+        signature: &str,
+        fds: &mut std::vec::IntoIter<RawFd>,
+    ) -> Vec<Argument> {
+        let mut args = Vec::new();
+        let mut offset = 0;
+
+        for type_char in signature.chars() {
+            match type_char {
+                'u' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let v = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
+                    args.push(Argument::Uint(v));
+                    offset += 4;
+                }
+                'i' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let v = i32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
+                    args.push(Argument::Int(v));
+                    offset += 4;
+                }
+                'h' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    offset += 4;
+                    let Some(fd) = fds.next() else {
+                        break;
+                    };
+                    args.push(Argument::Fd(fd));
+                }
+                's' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let len = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]) as usize;
+                    offset += 4;
+                    if len == 0 {
+                        args.push(Argument::String(String::new()));
+                        continue;
+                    }
+                    if offset + len > data.len() {
+                        break;
+                    }
+                    let bytes = &data[offset..offset + len];
+                    let null_pos = bytes.iter().position(|&b| b == 0).unwrap_or(len);
+                    let s = String::from_utf8_lossy(&bytes[..null_pos]).to_string();
+                    args.push(Argument::String(s));
+                    offset += len;
+                    let pad = (4 - (len % 4)) % 4;
+                    offset += pad;
+                }
+                'o' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let v = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
+                    args.push(Argument::Object(v));
+                    offset += 4;
+                }
+                'n' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let v = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]);
+                    args.push(Argument::NewId(v));
+                    offset += 4;
+                }
+                'a' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let len = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]) as usize;
+                    offset += 4;
+                    if offset + len > data.len() {
+                        break;
+                    }
+                    let v = data[offset..offset + len].to_vec();
+                    args.push(Argument::Array(v));
+                    offset += len;
+                    let pad = (4 - (len % 4)) % 4;
+                    offset += pad;
+                }
+                'f' => {
+                    if offset + 4 > data.len() {
+                        break;
+                    }
+                    let v = i32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
                     ]);
                     args.push(Argument::Fixed(v));
                     offset += 4;

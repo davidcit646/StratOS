@@ -93,6 +93,9 @@ pub fn load_and_run_all() -> Result<(), String> {
     let seatd_toml = include_str!("../manifests/seatd.toml");
     manifests.push(parse_manifest(seatd_toml)?);
 
+    let strat_live_welcome_toml = include_str!("../manifests/strat-live-welcome.toml");
+    manifests.push(parse_manifest(strat_live_welcome_toml)?);
+
     let stratwm_toml = include_str!("../manifests/stratwm.toml");
     manifests.push(parse_manifest(stratwm_toml)?);
 

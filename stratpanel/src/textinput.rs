@@ -3,7 +3,7 @@ const MOD_CAPS: u32 = 1 << 1;
 const MOD_CTRL: u32 = 1 << 2;
 
 const MAX_INPUT_LEN: usize = 256;
-const VISIBLE_CHARS: usize = 30;
+const DEFAULT_VISIBLE_CHARS: usize = 30;
 
 pub struct TextInput {
     buffer: Vec<char>,
@@ -41,28 +41,28 @@ impl TextInput {
                 if self.cursor > 0 {
                     self.cursor -= 1;
                     self.buffer.remove(self.cursor);
-                    self.adjust_scroll();
+                    self.adjust_scroll(DEFAULT_VISIBLE_CHARS);
                 }
             }
             // Delete (KEY_DELETE = 111, evdev = 111)
             111 => {
                 if self.cursor < self.buffer.len() {
                     self.buffer.remove(self.cursor);
-                    self.adjust_scroll();
+                    self.adjust_scroll(DEFAULT_VISIBLE_CHARS);
                 }
             }
             // Left arrow (KEY_LEFT = 105, evdev = 105)
             105 => {
                 if self.cursor > 0 {
                     self.cursor -= 1;
-                    self.adjust_scroll();
+                    self.adjust_scroll(DEFAULT_VISIBLE_CHARS);
                 }
             }
             // Right arrow (KEY_RIGHT = 106, evdev = 106)
             106 => {
                 if self.cursor < self.buffer.len() {
                     self.cursor += 1;
-                    self.adjust_scroll();
+                    self.adjust_scroll(DEFAULT_VISIBLE_CHARS);
                 }
             }
             // Home (KEY_HOME = 102, evdev = 102)
@@ -73,7 +73,7 @@ impl TextInput {
             // End (KEY_END = 107, evdev = 107)
             107 => {
                 self.cursor = self.buffer.len();
-                self.adjust_scroll();
+                self.adjust_scroll(DEFAULT_VISIBLE_CHARS);
             }
             // Enter (KEY_ENTER = 28, evdev = 28) — submit (no-op for now)
             28 => {}
@@ -90,37 +90,54 @@ impl TextInput {
                     if self.buffer.len() < MAX_INPUT_LEN {
                         self.buffer.insert(self.cursor, c);
                         self.cursor += 1;
-                        self.adjust_scroll();
+                        self.adjust_scroll(DEFAULT_VISIBLE_CHARS);
                     }
                 }
             }
         }
     }
 
-    pub fn click_at(&mut self, pixel_offset: i32) {
+    pub fn click_at(&mut self, pixel_offset: i32, glyph_advance_px: i32, visible_chars: usize) {
+        let glyph_advance_px = glyph_advance_px.max(1);
         if pixel_offset < 0 {
             self.cursor = 0;
         } else {
-            let char_idx = (pixel_offset / 6) as usize;
+            let char_idx = (pixel_offset / glyph_advance_px) as usize;
             self.cursor = char_idx.min(self.buffer.len());
         }
-        self.adjust_scroll();
+        self.adjust_scroll(visible_chars);
     }
 
-    pub fn display_text(&self) -> String {
-        let end = (self.scroll + VISIBLE_CHARS).min(self.buffer.len());
+    pub fn display_text(&self, visible_chars: usize) -> String {
+        let visible_chars = visible_chars.max(1);
+        let end = (self.scroll + visible_chars).min(self.buffer.len());
         self.buffer[self.scroll..end].iter().collect()
     }
 
-    pub fn cursor_pixel_offset(&self) -> i32 {
-        (self.cursor - self.scroll) as i32 * 6
+    pub fn cursor_pixel_offset(&self, glyph_advance_px: i32) -> i32 {
+        (self.cursor.saturating_sub(self.scroll)) as i32 * glyph_advance_px.max(1)
     }
 
-    fn adjust_scroll(&mut self) {
+    pub fn text(&self) -> String {
+        self.buffer.iter().collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.scroll = 0;
+    }
+
+    pub fn ensure_cursor_visible(&mut self, visible_chars: usize) {
+        self.adjust_scroll(visible_chars);
+    }
+
+    fn adjust_scroll(&mut self, visible_chars: usize) {
+        let visible_chars = visible_chars.max(1);
         if self.cursor < self.scroll {
             self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + VISIBLE_CHARS {
-            self.scroll = self.cursor - VISIBLE_CHARS + 1;
+        } else if self.cursor >= self.scroll + visible_chars {
+            self.scroll = self.cursor - visible_chars + 1;
         }
     }
 

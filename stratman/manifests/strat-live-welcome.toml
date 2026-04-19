@@ -1,0 +1,5 @@
+name = "strat-live-welcome"
+exec = "/bin/strat-live-welcome"
+restart = "never"
+oneshot = true
+depends = ["seatd"]

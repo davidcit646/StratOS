@@ -1,5 +1,11 @@
 use nix::sys::socket::{self, MsgFlags, SockFlag, SockType, socket as nix_socket, UnixAddr};
 use nix::unistd::close;
+#[cfg(unix)]
+use nix::sys::socket::{recvmsg, ControlMessageOwned};
+#[cfg(unix)]
+use libc;
+#[cfg(unix)]
+use std::io::IoSliceMut;
 use std::os::unix::io::{IntoRawFd, RawFd};
 
 #[derive(Debug)]
@@ -90,6 +96,38 @@ impl WaylandSocket {
     pub fn receive(&self, buffer: &mut [u8]) -> Result<usize, Error> {
         let bytes_read = socket::recv(self.fd, buffer, MsgFlags::empty()).map_err(Error::Receive)?;
         Ok(bytes_read)
+    }
+
+    /// Like [`receive`], but also collects `SCM_RIGHTS` fds (required for `wl_keyboard.keymap`).
+    #[cfg(unix)]
+    pub fn receive_with_fds(&self, buffer: &mut [u8]) -> Result<(usize, Vec<RawFd>), Error> {
+        let mut iov = [IoSliceMut::new(buffer)];
+        let cmsg_cap = unsafe {
+            libc::CMSG_SPACE((std::mem::size_of::<RawFd>() * 32) as u32) as usize
+        };
+        let mut cmsg_buffer = vec![0u8; cmsg_cap];
+        let msg = recvmsg::<()>(
+            self.fd,
+            &mut iov,
+            Some(&mut cmsg_buffer),
+            MsgFlags::MSG_CMSG_CLOEXEC,
+        )
+        .map_err(Error::Receive)?;
+        let mut fds = Vec::new();
+        if let Ok(cmsgs) = msg.cmsgs() {
+            for c in cmsgs {
+                if let ControlMessageOwned::ScmRights(mut r) = c {
+                    fds.append(&mut r);
+                }
+            }
+        }
+        Ok((msg.bytes, fds))
+    }
+
+    #[cfg(not(unix))]
+    pub fn receive_with_fds(&self, buffer: &mut [u8]) -> Result<(usize, Vec<RawFd>), Error> {
+        let n = self.receive(buffer)?;
+        Ok((n, Vec::new()))
     }
 
     pub fn raw_fd(&self) -> RawFd {

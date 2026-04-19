@@ -197,10 +197,11 @@ fn draw_text(buf: &mut [u8], stride: u32, w: i32, h: i32, x: i32, y: i32, text: 
         let chl = ch.to_ascii_lowercase();
         let glyph = FONT.iter().find(|(c, _)| *c == chl);
         if let Some((_, rows)) = glyph {
-            for row_idx in 0..7 {
-                let row = rows[row_idx];
-                for col_idx in 0..5 {
-                    if (row >> (4 - col_idx)) & 1 == 1 {
+            // 5x7 font is column-major: first 5 bytes are columns, bit0 is top row.
+            for col_idx in 0..5 {
+                let col = rows[col_idx];
+                for row_idx in 0..7 {
+                    if (col >> row_idx) & 1 == 1 {
                         let px = cx + col_idx as i32;
                         let py = y + row_idx as i32;
                         if px >= 0 && px < w && py >= 0 && py < h {

@@ -4,6 +4,7 @@ use stratlayer::{
 };
 use std::collections::HashMap;
 use std::os::unix::io::RawFd;
+use std::sync::Arc;
 
 const WL_SHM_FORMAT_ARGB8888: u32 = 0;
 
@@ -36,6 +37,8 @@ pub struct WaylandWindow {
 
     current_buffer_id: Option<u32>,
     configured: bool,
+    /// Latest `wl_keyboard.keymap` not yet consumed by the terminal (replaced if compositor resends).
+    pending_keymap: Option<(u32, Arc<Vec<u8>>)>,
 }
 
 impl WaylandWindow {
@@ -62,7 +65,7 @@ impl WaylandWindow {
         }
 
         let compositor_id = Self::bind_global(
-            &mut client, registry_id, &globals, "wl_compositor", 4, Interface::WlCompositor,
+            &mut client, registry_id, &globals, "wl_compositor", 5, Interface::WlCompositor,
         )?;
         let shm_id = Self::bind_global(
             &mut client, registry_id, &globals, "wl_shm", 1, Interface::WlShm,
@@ -93,7 +96,10 @@ impl WaylandWindow {
             XdgSurface::new(xdg_surface_id).get_toplevel(xdg_toplevel_id, socket);
             XdgToplevel::new(xdg_toplevel_id).set_title("StratTerm", socket);
             XdgToplevel::new(xdg_toplevel_id).set_app_id("stratos.stratterm", socket);
-            WlSurface::new(surface_id).commit(socket);
+            let s = WlSurface::new(surface_id);
+            s.set_buffer_transform(0, socket);
+            s.set_buffer_scale(1, socket);
+            s.commit(socket);
             WlSeat::new(seat_id).get_keyboard(keyboard_id, socket);
         }
 
@@ -131,6 +137,7 @@ impl WaylandWindow {
             pending_height: None,
             current_buffer_id: None,
             configured: false,
+            pending_keymap: None,
         };
 
         // Roundtrip #2: pull in the initial xdg_surface / xdg_toplevel configure.
@@ -193,10 +200,17 @@ impl WaylandWindow {
                         object_id, code, message
                     ));
                 }
+                Event::KeyboardKeymap { format, data } => {
+                    self.pending_keymap = Some((*format, Arc::clone(data)));
+                }
                 _ => {}
             }
         }
         Ok(())
+    }
+
+    pub fn take_pending_keymap(&mut self) -> Option<(u32, Arc<Vec<u8>>)> {
+        self.pending_keymap.take()
     }
 
     pub fn poll_events(&mut self) -> Result<Vec<Event>, String> {
@@ -224,7 +238,10 @@ impl WaylandWindow {
 
     pub fn set_title(&mut self, title: &str) {
         XdgToplevel::new(self.xdg_toplevel_id).set_title(title, self.client.socket());
-        WlSurface::new(self.surface_id).commit(self.client.socket());
+        let s = WlSurface::new(self.surface_id);
+        s.set_buffer_transform(0, self.client.socket());
+        s.set_buffer_scale(1, self.client.socket());
+        s.commit(self.client.socket());
     }
 
     #[allow(dead_code)]
@@ -274,8 +291,10 @@ impl WaylandWindow {
         );
 
         let surface = WlSurface::new(self.surface_id);
+        surface.set_buffer_transform(0, self.client.socket());
+        surface.set_buffer_scale(1, self.client.socket());
         surface.attach(buffer_id, 0, 0, self.client.socket());
-        surface.damage(0, 0, width as i32, height as i32, self.client.socket());
+        surface.damage_buffer(0, 0, width as i32, height as i32, self.client.socket());
         surface.commit(self.client.socket());
 
         self.current_buffer_id = Some(buffer_id);

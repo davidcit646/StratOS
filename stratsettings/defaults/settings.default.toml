@@ -4,13 +4,13 @@
 # Stratterm: PTY + file explorer (F7). Legacy flat keys under [stratterm] are still accepted.
 [stratterm.term]
 # scrollback_max_lines = 10000   # 0 = use built-in default (10000)
-# terminal_font_scale = 1.0      # reserved (embedded bitmap)
+# terminal_font_scale = 1.0      # 1.0..4.0 (rounded to integer bitmap scale)
 
 [stratterm.file_explorer]
 # status_bar_enabled = 1
-# client_title_bar_enabled = 1
-# title_bar_font_scale = 1.0
-# default_view = "flat"          # or "tree"
+client_title_bar_enabled = 1
+# title_bar_font_scale = 1.0     # 1.0..4.0 (rounded to integer bitmap scale)
+default_view = "tree"
 
 [panel]
 position = "top"

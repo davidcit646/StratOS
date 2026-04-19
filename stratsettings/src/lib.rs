@@ -37,7 +37,7 @@ fn default_scrollback_lines() -> usize {
 pub struct TerminalSettings {
     /// Scrollback buffer depth (lines). `0` means use built-in default (10000).
     pub scrollback_max_lines: usize,
-    /// Reserved: embedded bitmap scale (1 or 2). Ignored by renderer until implemented.
+    /// Terminal bitmap scale multiplier (`1.0`..`4.0`, rounded to integer steps).
     pub terminal_font_scale: f32,
 }
 
@@ -60,7 +60,7 @@ pub struct FileExplorerSettings {
     /// Client-drawn Files/Terminal bar. If false, explorer + PTY use full height (no title strip).
     #[serde(deserialize_with = "deserialize_bool01")]
     pub client_title_bar_enabled: bool,
-    /// Reserved: title/chrome text scale relative to terminal grid.
+    /// File explorer + title-bar text/chrome scale (`1.0`..`4.0`, rounded to integer steps).
     pub title_bar_font_scale: f32,
     /// Initial listing mode: `flat` or `tree`.
     pub default_view: String,
@@ -72,7 +72,7 @@ impl Default for FileExplorerSettings {
             status_bar_enabled: true,
             client_title_bar_enabled: true,
             title_bar_font_scale: 1.0,
-            default_view: "flat".to_string(),
+            default_view: "tree".to_string(),
         }
     }
 }
@@ -107,7 +107,7 @@ pub struct PanelSettings {
     pub opacity: f64,
     #[serde(deserialize_with = "deserialize_bool01")]
     pub blur: bool,
-    /// Reserved: monospaced / bitmap scale for future panel renderer.
+    /// Panel bitmap scale multiplier (`1.0`..`4.0`, rounded to integer steps).
     pub font_scale: f32,
     pub clock: ClockSettings,
     pub pinned: PinnedSettings,

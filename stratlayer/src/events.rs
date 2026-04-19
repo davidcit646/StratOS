@@ -1,4 +1,7 @@
 use crate::wire::protocol::{Argument, Message};
+use nix::unistd::{close, read};
+use std::os::unix::io::RawFd;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Interface {
@@ -75,6 +78,11 @@ pub enum Event {
     LayerSurfaceClosed {
         object_id: u32,
     },
+    /// wl_keyboard.keymap — keymap bytes (fd was read and closed inside stratlayer).
+    KeyboardKeymap {
+        format: u32,
+        data: Arc<Vec<u8>>,
+    },
     /// wl_keyboard.key(serial, time, key, state)
     KeyboardKey {
         serial: u32,
@@ -122,6 +130,36 @@ pub enum Event {
     },
 }
 
+/// Read and close the `wl_keyboard.keymap` fd; returns empty `Vec` for NO_KEYMAP / zero size.
+fn read_keymap_payload(format: u32, fd: RawFd, size: u32) -> Result<Vec<u8>, ()> {
+    const FMT_NONE: u32 = 0;
+    if format == FMT_NONE || size == 0 {
+        let _ = close(fd);
+        return Ok(Vec::new());
+    }
+    let sz = size as usize;
+    let mut buf = vec![0u8; sz];
+    let mut off = 0usize;
+    while off < sz {
+        let n = match read(fd, &mut buf[off..]) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = close(fd);
+                return Err(());
+            }
+        };
+        if n == 0 {
+            break;
+        }
+        off += n;
+    }
+    let _ = close(fd);
+    if off != sz {
+        return Err(());
+    }
+    Ok(buf)
+}
+
 impl Event {
     /// Signature string for a given (interface, opcode) event.
     /// Empty string means we don't care about this event.
@@ -134,6 +172,7 @@ impl Event {
             (Interface::WlCallback, 0) => "u",    // done
             (Interface::WlShm, 0) => "u",         // format
             (Interface::WlBuffer, 0) => "",       // release (no args)
+            (Interface::WlKeyboard, 0) => "uhu", // keymap: format, fd, size
             (Interface::WlKeyboard, 3) => "uuuu", // key
             (Interface::WlKeyboard, 4) => "uuuuu",// modifiers
             (Interface::WlPointer, 0) => "uoff", // enter: serial, surface, surface_x, surface_y
@@ -151,7 +190,31 @@ impl Event {
         }
     }
 
-    pub fn from_message(msg: &Message, interface: Interface) -> Option<Event> {
+    pub fn from_message(
+        msg: &Message,
+        interface: Interface,
+        fds: &mut std::vec::IntoIter<RawFd>,
+    ) -> Option<Event> {
+        if let (Interface::WlKeyboard, 0) = (interface, msg.header.opcode) {
+            let args = msg.parse_args_with_fds("uhu", fds);
+            if args.len() < 3 {
+                return None;
+            }
+            if let (Argument::Uint(format), Argument::Fd(fd), Argument::Uint(size)) =
+                (&args[0], &args[1], &args[2])
+            {
+                let data = match read_keymap_payload(*format, *fd, *size) {
+                    Ok(v) => v,
+                    Err(_) => return None,
+                };
+                return Some(Event::KeyboardKeymap {
+                    format: *format,
+                    data: Arc::new(data),
+                });
+            }
+            return None;
+        }
+
         let sig = Self::signature_for(interface, msg.header.opcode);
         let args = msg.parse_args(sig);
 

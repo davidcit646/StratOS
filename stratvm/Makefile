@@ -19,8 +19,11 @@ endif
 # Usage: make wlroots-build && make STRATVM_BUNDLED_WLROOTS=1
 STRATVM_BUNDLED_WLROOTS ?= 0
 WLROOTS_SRC := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/wlroots)
+# pkg-config stub for hwdata (wlroots DRM); Ubuntu 22.04 ships pnp.ids without hwdata.pc.
+STRATVM_PKGCONFIG_STUBS := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/pkgconfig-stubs)
 ifeq ($(STRATVM_BUNDLED_WLROOTS),1)
-export PKG_CONFIG_PATH := $(WLROOTS_SRC)/build:$(WLROOTS_SRC)/build/meson-private:$(PKG_CONFIG_PATH)
+# Prefer uninstalled .pc so -L/-I point at the in-tree build (meson-private alone uses prefix=/usr/local).
+export PKG_CONFIG_PATH := $(WLROOTS_SRC)/build/meson-uninstalled:$(WLROOTS_SRC)/build/meson-private:$(PKG_CONFIG_PATH)
 endif
 
 ifeq ($(shell command -v $(PKG_CONFIG) >/dev/null 2>&1 && echo ok),)
@@ -29,7 +32,16 @@ endif
 
 # Prefer newest compatible wlroots; bare "wlroots" last (Arch's .pc is named wlroots.pc inside wlroots0.17/).
 # Fallback: any wlroots*.pc under /usr/lib/pkgconfig or Arch versioned pkgconfig dirs.
+# $(shell ...) does not always inherit Makefile exports; set PKG_CONFIG_PATH explicitly here.
 WLROOTS_PKG := $(shell \
+	P="$(PKG_CONFIG_PATH)"; \
+	if [ "$(STRATVM_BUNDLED_WLROOTS)" = "1" ]; then \
+		P="$(WLROOTS_SRC)/build/meson-uninstalled:$(WLROOTS_SRC)/build/meson-private:$$P"; \
+	fi; \
+	export PKG_CONFIG_PATH="$$P"; \
+	if [ "$(STRATVM_BUNDLED_WLROOTS)" = "1" ] && $(PKG_CONFIG) --exists wlroots-0.19-uninstalled 2>/dev/null; then \
+		echo wlroots-0.19-uninstalled; exit 0; \
+	fi; \
 	for p in wlroots-0.22 wlroots-0.21 wlroots-0.20 wlroots-0.19 wlroots-0.18 wlroots-0.17 wlroots; do \
 		$(PKG_CONFIG) --exists "$$p" 2>/dev/null && echo "$$p" && exit 0; \
 	done; \
@@ -47,7 +59,11 @@ endif
 
 # Header root must match the library pkg-config selects (avoid mixing trees from wildcards).
 # Meson wlroots uses Cflags: -I${includedir}/wlroots-0.19 (not plain includedir); prefer that path.
-WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --cflags-only-I $(WLROOTS_PKG) 2>/dev/null | tr ' ' '\n' | sed -n '/^-I.*wlroots/s/^-I//p' | head -1)
+# Installed wlroots uses -I.../wlroots-0.19; in-tree / uninstalled uses -I.../wlroots/include (avoid matching .../wlroots/build/include first).
+WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --cflags-only-I $(WLROOTS_PKG) 2>/dev/null | tr ' ' '\n' | grep '^-I.*/wlroots-0\.[0-9][0-9]*$$' | head -1 | sed 's/^-I//')
+ifeq ($(strip $(WLR_INCLUDEDIR)),)
+WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --cflags-only-I $(WLROOTS_PKG) 2>/dev/null | tr ' ' '\n' | grep '^-I.*/wlroots/include$$' | head -1 | sed 's/^-I//')
+endif
 ifeq ($(strip $(WLR_INCLUDEDIR)),)
 WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --variable=includedir $(WLROOTS_PKG) 2>/dev/null)
 endif
@@ -114,7 +130,20 @@ all: $(BIN)
 
 # Build wlroots from ./wlroots (submodule), then: make STRATVM_BUNDLED_WLROOTS=1
 wlroots-build:
-	cd "$(WLROOTS_SRC)" && meson setup build -Dexamples=false -Dtests=false && meson compile -C build
+	cd "$(WLROOTS_SRC)" && rm -rf build && \
+	rm -rf subprojects/v4l-utils subprojects/packagecache/v4l-utils-*.tar* 2>/dev/null; \
+	rm -f subprojects/v4l-utils.wrap subprojects/edid-decode.wrap; \
+	PKG_CONFIG_PATH="$(STRATVM_PKGCONFIG_STUBS):$(PKG_CONFIG_PATH)" \
+	meson setup build \
+		-Dexamples=false \
+		-Dwerror=false \
+		-Dbackends=drm,libinput \
+		-Dsession=enabled \
+		-Drenderers=auto \
+		-Dallocators=auto \
+		--buildtype=release \
+		--wrap-mode=default && \
+	meson compile -C build
 
 xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) server-header $(WL_PROTO_DIR)/stable/xdg-shell/xdg-shell.xml $@

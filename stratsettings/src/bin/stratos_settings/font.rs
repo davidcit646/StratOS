@@ -1,6 +1,6 @@
 //! Minimal 5×7 bitmap font (same glyph bytes as `stratpanel`; decoded column-major here).
 
-pub fn draw_text(
+pub fn draw_text_scaled(
     buf: &mut [u8],
     stride: u32,
     w: i32,
@@ -9,7 +9,9 @@ pub fn draw_text(
     y: i32,
     text: &str,
     color: u32,
+    scale: i32,
 ) {
+    let scale = scale.max(1);
     const FONT: [(char, [u8; 7]); 95] = [
         ('0', [0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00, 0x00]),
         ('1', [0x00, 0x42, 0x7F, 0x40, 0x00, 0x00, 0x00]),
@@ -112,7 +114,7 @@ pub fn draw_text(
     let mut cursor_x = x;
     for ch in text.chars() {
         if ch == ' ' {
-            cursor_x += 6;
+            cursor_x += 6 * scale;
             continue;
         }
         let glyph = FONT.iter().find(|(c, _)| *c == ch);
@@ -122,23 +124,39 @@ pub fn draw_text(
                 let col = cols[col_idx];
                 for row_idx in 0..7 {
                     if (col >> row_idx) & 1 == 1 {
-                        let px = cursor_x + col_idx as i32;
-                        let py = y + row_idx as i32;
-                        if px >= 0 && px < w && py >= 0 && py < h {
-                            let off = (py as u32 * stride + px as u32 * 4) as usize;
-                            if off + 4 <= buf.len() {
-                                buf[off..off + 4].copy_from_slice(&bytes);
+                        let px0 = cursor_x + col_idx as i32 * scale;
+                        let py0 = y + row_idx as i32 * scale;
+                        for sy in 0..scale {
+                            for sx in 0..scale {
+                                let px = px0 + sx;
+                                let py = py0 + sy;
+                                if px >= 0 && px < w && py >= 0 && py < h {
+                                    let off = (py as u32 * stride + px as u32 * 4) as usize;
+                                    if off + 4 <= buf.len() {
+                                        buf[off..off + 4].copy_from_slice(&bytes);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        cursor_x += 6;
+        cursor_x += 6 * scale;
     }
 }
 
-pub fn fill_rect(buf: &mut [u8], stride: u32, w: i32, h: i32, x: i32, y: i32, rw: i32, rh: i32, color: u32) {
+pub fn fill_rect(
+    buf: &mut [u8],
+    stride: u32,
+    w: i32,
+    h: i32,
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    color: u32,
+) {
     let b = color.to_le_bytes();
     let x0 = x.max(0);
     let y0 = y.max(0);

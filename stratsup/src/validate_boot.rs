@@ -15,13 +15,16 @@ const HOME_STATUS_HEALTHY: u8 = 0;
 const HOME_STATUS_DEGRADED: u8 = 1;
 const HOME_STATUS_CORRUPT: u8 = 2;
 
-const STRAT_WM_BIN: &str = "/system/bin/stratwm";
-const CRITICAL_BINARIES: [&str; 1] = [STRAT_WM_BIN];
+// After initramfs pivot, the system image is the root filesystem (no /system mount).
+const STRAT_WM_BIN: &str = "/bin/stratwm";
+const STRAT_PANEL_BIN: &str = "/bin/stratpanel";
+/// Binaries required for a usable graphical session (fail fast before slot is marked good).
+const CRITICAL_BINARIES: [&str; 2] = [STRAT_WM_BIN, STRAT_PANEL_BIN];
 
 pub fn run() -> io::Result<()> {
     let mut failures = Vec::new();
 
-    if !mount_is_ro("/system") {
+    if !system_root_is_ro() {
         failures.push("SYSTEM not mounted read-only");
     }
     if !mount_is_rw("/config") {
@@ -70,6 +73,11 @@ fn read_active_slot() -> io::Result<u8> {
 
 fn mount_is_ro(mount_point: &str) -> bool {
     mount_has_option(mount_point, "ro")
+}
+
+/// True when the read-only system volume is mounted: live/EROFS uses `/`, older layouts use `/system`.
+fn system_root_is_ro() -> bool {
+    mount_is_ro("/") || mount_is_ro("/system")
 }
 
 fn mount_is_rw(mount_point: &str) -> bool {
@@ -133,9 +141,12 @@ fn check_binaries(paths: &[&str]) -> Result<(), &'static str> {
     for path in paths {
         if !binary_executable(path) {
             if *path == STRAT_WM_BIN {
-                return Err("Strat WM binary missing");
+                return Err("Strat WM binary missing or not executable");
             }
-            return Err("Critical system binary missing");
+            if *path == STRAT_PANEL_BIN {
+                return Err("Strat panel binary missing or not executable");
+            }
+            return Err("Critical system binary missing or not executable");
         }
     }
     Ok(())

@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH, Instant};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Clock {
     last_tick: Instant,
@@ -36,9 +36,18 @@ impl Clock {
         };
 
         if show_date {
-            let month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            let month_names = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
             let weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-            self.cached_string = format!("{} {} {} {} {}", weekday_names[weekday], month_names[(month - 1) as usize], day, year, time_str);
+            self.cached_string = format!(
+                "{} {} {} {} {}",
+                weekday_names[weekday],
+                month_names[(month - 1) as usize],
+                day,
+                year,
+                time_str
+            );
         } else {
             self.cached_string = time_str;
         }

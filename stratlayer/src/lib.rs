@@ -52,13 +52,17 @@ impl WaylandClient {
 
     /// One round of receive + decode. Blocks on the socket.
     pub fn poll(&mut self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-        let messages = self.dispatcher.dispatch_once()?;
+        let (messages, fds) = self.dispatcher.dispatch_once()?;
+        let mut fd_iter = fds.into_iter();
         let mut events = Vec::with_capacity(messages.len());
         for msg in &messages {
             let iface = self.registry.get_interface(msg.header.sender_id);
-            if let Some(ev) = Event::from_message(msg, iface) {
+            if let Some(ev) = Event::from_message(msg, iface, &mut fd_iter) {
                 events.push(ev);
             }
+        }
+        for fd in fd_iter {
+            let _ = nix::unistd::close(fd);
         }
         Ok(events)
     }

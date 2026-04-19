@@ -5,6 +5,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# User-local Meson / wlroots (pip --user, or meson install --prefix=$HOME/.local) must win over stale system pkg-config names.
+export PKG_CONFIG_PATH="${HOME}/.local/share/pkgconfig:${HOME}/.local/lib/x86_64-linux-gnu/pkgconfig:${HOME}/.local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export PATH="${HOME}/.local/bin:${PATH}"
 OUT_DIR="$REPO_ROOT/out/phase7"
 PHASE4_DIR="$REPO_ROOT/out/phase4"
 PHASE3_DIR="$REPO_ROOT/out/phase3"
@@ -176,17 +179,45 @@ cd "$REPO_ROOT/stratvm"
 if [ $CLEAN_BUILD -eq 1 ]; then
     make clean
 fi
-# stratvm tracks wlroots 0.19.x API (see stratvm/Makefile). Prefer system >= 0.19; else build stratvm/wlroots.
-if pkg-config --exists 'wlroots >= 0.19' 2>/dev/null; then
+# stratvm tracks wlroots 0.19.x API (see stratvm/Makefile). Prefer system >= 0.19 with DRM
+# (required for real KMS/DRM boot); else build stratvm/wlroots with -Dbackends=drm,libinput.
+# Note: Meson installs the .pc as e.g. wlroots-0.19, not the bare name "wlroots".
+_stratvm_system_wlr=0
+for _pc in wlroots-0.22 wlroots-0.21 wlroots-0.20 wlroots-0.19 wlroots; do
+    if ! pkg-config --exists "$_pc" 2>/dev/null || ! pkg-config --atleast-version=0.19.0 "$_pc" 2>/dev/null; then
+        continue
+    fi
+    _drm=$(pkg-config --variable=have_drm_backend "$_pc" 2>/dev/null || echo false)
+    if [ "$_drm" != "true" ]; then
+        _drm_disp="${_drm:-<unset>}"
+        log_warn "pkg-config $_pc lacks DRM backend (have_drm_backend=${_drm_disp}) — not using for stratvm (KMS/GUI requires DRM)."
+        continue
+    fi
+    _stratvm_system_wlr=1
+    break
+done
+if [ "$_stratvm_system_wlr" -eq 1 ]; then
     make -j"$(nproc)"
 else
-    log_warn "wlroots >= 0.19 not found (Arch: pacman -S wlroots0.19). Building bundled stratvm/wlroots..."
-    if [ ! -f "$REPO_ROOT/stratvm/wlroots/meson.build" ]; then
-        log_error "stratvm/wlroots is missing — add the wlroots 0.19 source tree there, or install wlroots >= 0.19."
+    log_warn "Suitable wlroots (>= 0.19 with DRM backend) not found via pkg-config — building submodule stratvm/wlroots (see stratvm/Makefile wlroots-build)."
+    if [ ! -f /usr/share/hwdata/pnp.ids ] && [ ! -f /usr/share/misc/pnp.ids ]; then
+        log_error "wlroots DRM backend needs PNP ID data. Install the hwdata package (provides /usr/share/hwdata/pnp.ids), then re-run."
         exit 1
     fi
     require_cmd meson
     require_cmd ninja
+    _meson_major=$(meson --version 2>/dev/null | head -n1 | cut -d. -f1 || echo 0)
+    if [ "${_meson_major:-0}" -lt 1 ] 2>/dev/null; then
+        log_error "Meson >= 1.3 is required for wlroots 0.19 (Ubuntu 22.04 ships 0.61). Install: python3 -m pip install --user 'meson>=1.3' && export PATH=\"\$HOME/.local/bin:\$PATH\""
+        exit 1
+    fi
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        :
+    else
+        log_error "Need curl or wget to fetch sources, or install wlroots >= 0.19 dev packages."
+        exit 1
+    fi
+    "$REPO_ROOT/scripts/fetch-wlroots.sh" || true
     make wlroots-build
     make -j"$(nproc)" STRATVM_BUNDLED_WLROOTS=1
 fi
@@ -366,6 +397,14 @@ if [ -f "$REPO_ROOT/scripts/strat-installer.sh" ]; then
     cp "$REPO_ROOT/scripts/strat-installer.sh" "$ROOTFS_DIR/bin/strat-installer"
     chmod 0755 "$ROOTFS_DIR/bin/strat-installer"
 fi
+if [ -f "$REPO_ROOT/scripts/strat-live-welcome.sh" ]; then
+    cp "$REPO_ROOT/scripts/strat-live-welcome.sh" "$ROOTFS_DIR/bin/strat-live-welcome"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-live-welcome"
+fi
+if [ -f "$REPO_ROOT/scripts/strat-live-install-wizard.sh" ]; then
+    cp "$REPO_ROOT/scripts/strat-live-install-wizard.sh" "$ROOTFS_DIR/bin/strat-live-install-wizard"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-live-install-wizard"
+fi
 copy_host_tool_for_installer() {
     local name="$1"
     local src
@@ -378,7 +417,7 @@ copy_host_tool_for_installer() {
         done
     fi
 }
-for _t in sgdisk partprobe mkfs.vfat mkfs.ext4 mke2fs mkfs.btrfs blkid lsblk blockdev; do
+for _t in sgdisk partprobe mkfs.vfat mkfs.ext4 mke2fs mkfs.btrfs blkid lsblk blockdev findmnt openvt; do
     copy_host_tool_for_installer "$_t" || true
 done
 
@@ -393,7 +432,7 @@ done
 # Copy shell and essential tools
 if [ -x /bin/busybox ]; then
     cp /bin/busybox "$ROOTFS_DIR/bin/"
-    for applet in sh ls cat cp mv rm mkdir rmdir ps kill grep; do
+    for applet in sh ls cat cp mv rm mkdir rmdir ps kill grep sleep; do
         ln -sf busybox "$ROOTFS_DIR/bin/$applet"
     done
 elif [ -x /bin/bash ]; then
@@ -410,8 +449,23 @@ elif [ -x /usr/sbin/seatd ]; then
     cp /usr/sbin/seatd "$ROOTFS_DIR/bin/"
 fi
 
+# Library dirs: system layout + user-local Meson installs (wlroots/wayland often only in ~/.local).
+_STRAT_ROOTFS_LIBDIRS="/usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu"
+for _extra in "${HOME}/.local/lib/x86_64-linux-gnu" "${HOME}/.local/lib64" "${HOME}/.local/lib"; do
+    if [ -d "$_extra" ]; then
+        _STRAT_ROOTFS_LIBDIRS="$_STRAT_ROOTFS_LIBDIRS $_extra"
+    fi
+done
+# Bundled wlroots (DRM) links libdisplay-info / libliftoff from the in-tree Meson build tree.
+_WLR_BUILD="$REPO_ROOT/stratvm/wlroots/build"
+for _d in "$_WLR_BUILD" "$_WLR_BUILD/subprojects/libdisplay-info" "$_WLR_BUILD/subprojects/libliftoff"; do
+    if [ -d "$_d" ]; then
+        _STRAT_ROOTFS_LIBDIRS="$_STRAT_ROOTFS_LIBDIRS $_d"
+    fi
+done
+
 # Copy essential libraries
-for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+for libdir in $_STRAT_ROOTFS_LIBDIRS; do
     if [ -d "$libdir" ]; then
         for lib in "$libdir"/*.so*; do
             if [ -f "$lib" ]; then
@@ -431,7 +485,7 @@ done
 
 # Copy key system libraries
 for lib in libc.so libm.so libdl.so libpthread.so librt.so; do
-    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+    for libdir in $_STRAT_ROOTFS_LIBDIRS; do
         if [ -f "$libdir/$lib" ]; then
             cp -L "$libdir/$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
             break
@@ -444,7 +498,7 @@ for soname in libgcc_s.so.1 libstdc++.so.6; do
     if [ -e "$ROOTFS_DIR/lib64/$soname" ]; then
         continue
     fi
-    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+    for libdir in $_STRAT_ROOTFS_LIBDIRS; do
         if [ -e "$libdir/$soname" ]; then
             cp -L "$libdir/$soname" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
             break
@@ -452,9 +506,25 @@ for soname in libgcc_s.so.1 libstdc++.so.6; do
     done
 done
 
+# sleep(1) for shell scripts (e.g. strat-wpa.sh) when busybox is not used (bash has no sleep builtin).
+if [ ! -x "$ROOTFS_DIR/bin/sleep" ]; then
+    for _sleep in /bin/sleep /usr/bin/sleep; do
+        if [ -x "$_sleep" ]; then
+            cp -L "$_sleep" "$ROOTFS_DIR/bin/sleep"
+            chmod 0755 "$ROOTFS_DIR/bin/sleep"
+            if command -v ldd >/dev/null 2>&1; then
+                ldd "$_sleep" 2>/dev/null | awk '/=> \// {print $3}' | while read -r lib; do
+                    [ -n "$lib" ] && [ -f "$lib" ] && cp -L "$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
+                done
+            fi
+            break
+        fi
+    done
+fi
+
 # Copy Wayland and graphics libraries
 for lib in libwayland-server.so libwayland-client.so libwlroots-*.so libpixman-1.so libxkbcommon.so libinput.so libevdev.so libdrm.so libEGL.so libgbm.so libGLESv2.so libvulkan.so libseat.so libudev.so; do
-    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+    for libdir in $_STRAT_ROOTFS_LIBDIRS; do
         for match in "$libdir"/$lib*; do
             if [ -f "$match" ]; then
                 cp -L "$match" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
@@ -465,7 +535,7 @@ done
 
 # Copy fontconfig and related libs
 for lib in libfontconfig.so libfreetype.so libpng.so libz.so libexpat.so libbrotli*.so; do
-    for libdir in /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+    for libdir in $_STRAT_ROOTFS_LIBDIRS; do
         for match in "$libdir"/$lib*; do
             if [ -f "$match" ]; then
                 cp -L "$match" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
@@ -513,12 +583,27 @@ cp -aL /usr/share/libinput "$ROOTFS_DIR/usr/share/" 2>/dev/null || true
 mkdir -p "$ROOTFS_DIR/usr/share/X11"
 cp -aL /usr/share/X11/xkb "$ROOTFS_DIR/usr/share/X11/" 2>/dev/null || true
 
+# Debian/Ubuntu glibc: ld-linux-x86-64.so.2 embeds default library paths under
+# /lib/x86_64-linux-gnu and /usr/lib/x86_64-linux-gnu (before ld.so.conf is fully applied).
+# Run after all copies into lib64 so every SONAME gets a stable symlink path.
+mkdir -p "$ROOTFS_DIR/lib/x86_64-linux-gnu" "$ROOTFS_DIR/usr/lib/x86_64-linux-gnu"
+for f in "$ROOTFS_DIR/lib64"/*.so*; do
+    if [ ! -f "$f" ]; then
+        continue
+    fi
+    b=$(basename "$f")
+    ln -sf "../../lib64/$b" "$ROOTFS_DIR/lib/x86_64-linux-gnu/$b"
+    ln -sf "../../../lib64/$b" "$ROOTFS_DIR/usr/lib/x86_64-linux-gnu/$b"
+done
+
 # Create ld.so.conf
 mkdir -p "$ROOTFS_DIR/etc"
 echo "/lib64" > "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/usr/lib64" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/lib" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/usr/lib" >> "$ROOTFS_DIR/etc/ld.so.conf"
+echo "/lib/x86_64-linux-gnu" >> "$ROOTFS_DIR/etc/ld.so.conf"
+echo "/usr/lib/x86_64-linux-gnu" >> "$ROOTFS_DIR/etc/ld.so.conf"
 
 # Create passwd file
 echo "root:x:0:0:root:/root:/bin/sh" > "$ROOTFS_DIR/etc/passwd"

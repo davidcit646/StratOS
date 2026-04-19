@@ -281,9 +281,19 @@ impl FileBrowser {
 }
 
 fn display_name(path: &Path) -> String {
-    path.file_name()
+    let raw = path
+        .file_name()
         .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii() && !c.is_ascii_control() {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
 }
 
 fn read_sorted_children(path: &Path) -> Result<Vec<PathBuf>, io::Error> {

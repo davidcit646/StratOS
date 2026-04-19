@@ -17,6 +17,15 @@ This is **not** a generic rescue image: it reuses `out/phase7` artifacts from `.
 
 UI-led installer flow (menus, diagnostics, preserve-CONFIG options) in **stratos-design.md** section **17.2–17.8** is still ahead. A **command-line fresh install** is available from the live session (`strat-installer`).
 
+### Text-mode install walkthrough (live only)
+
+On **`strat.live=1`** sessions, **stratman** starts **`strat-live-welcome`** once **seatd** is up (before **stratwm**). That script:
+
+1. Prints a short hint on **tty1** / the **console** that the graphical session is starting.
+2. If **`openvt`** is present (copied from the build host into the rootfs), it launches **`strat-live-install-wizard`** on **virtual terminal 2** (`tty2`).
+
+If the Wayland terminal has **no keyboard or mouse**, switch with **Alt+F2** (sometimes **Ctrl+Alt+F2**) to the text wizard: it shows **`lsblk`**, asks for a whole-disk device (e.g. `/dev/nvme0n1`), then runs **`strat-installer --disk …`**, which still requires the typed confirmation phrase **`DESTROY_ALL_DATA_ON_THIS_DISK`**.
+
 ---
 
 ## Milestone B — Install to a real disk (fresh wipe)
@@ -87,6 +96,26 @@ Optional kernel cmdline knobs parsed in initramfs:
 ## Boot on hardware
 
 Write **`out/live/stratos-live.iso`** to USB (see **Physical USB** below) or use firmware boot-from-optical if your machine exposes the medium that way. Bring-up is validated on **real UEFI hardware** (GPU, input, and firmware vary by machine).
+
+---
+
+## VirtualBox and “it stops after snd_hda_intel”
+
+The line `snd_hda_intel … Cannot probe codecs, giving up` means **only** the virtual HDA sound device failed; it is **not** StratOS “giving up” globally. Often the kernel continues but **nothing new appears on the VGA console** (scroll up: earlier lines may have scrolled off), or **initramfs** is still running.
+
+**What to do**
+
+1. **Scroll the guest console** or enable **serial** in the VM (COM1 → raw file) so you can read **init** output; StratBoot passes `console=ttyS0,115200` for that path.
+2. **Firmware:** use **UEFI**, **Secure Boot off** (see below).
+3. **Optical / ISO attachment:** prefer attaching the ISO to the **IDE** controller for the virtual CD/DVD if SATA emulation mis-identifies the medium (device might be `/dev/sr0` vs a whole-disk `/dev/sda` isohybrid layout).
+4. **RAM:** give the VM **at least ~4 GiB** for the default live tmpfs caps; less can make the session fragile.
+5. **Explicit ISO device:** if auto-detection fails, rebuild with a kernel cmdline that includes  
+   `strat.live_iso_dev=/dev/sr0`  
+   (or `/dev/sda` / `/dev/sda1` depending on how VirtualBox exposes the ISO). Today that parameter is easiest to add by adjusting the live cmdline in `stratboot` (`start_kernel_efi_live`) and rebuilding `BOOTX64.EFI`, or by using a firmware/EFI shell that appends kernel arguments if your setup supports it.
+
+Recent initramfs builds also **print a visible banner** on `/dev/tty0` when init starts and on ISO/EROFS failures so a blank screen after audio noise is easier to interpret.
+
+**Wayland / GPU:** even after boot succeeds, **wlroots** may not get a usable DRM stack on VirtualBox’s virtual GPU; a black screen *after* login paths start is a separate issue from ISO mounting. Prefer **QEMU/KVM** or **bare metal** for compositor bring-up if VirtualBox stays black.
 
 ---
 

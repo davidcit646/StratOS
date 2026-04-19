@@ -29,12 +29,6 @@
 #include <wlr/backend/multi.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
-/* wlroots ≤0.17: separate header. Newer releases fold surface into compositor.h. */
-#if defined(__has_include)
-#if __has_include(<wlr/types/wlr_surface.h>)
-#include <wlr/types/wlr_surface.h>
-#endif
-#endif
 #ifdef STRATWM_HAVE_WLR_SUBCOMPOSITOR
 #include <wlr/types/wlr_subcompositor.h>
 #endif
@@ -64,6 +58,8 @@ struct stratwm_output {
     struct wlr_scene_rect *background;
     struct wl_listener frame;
     struct wl_listener destroy;
+    struct wl_listener commit;
+    struct wl_listener request_state;
 };
 
 struct stratwm_view {
@@ -82,6 +78,7 @@ struct stratwm_view {
     struct wlr_scene_rect *max_button;      /* Maximize button */
     struct wlr_scene_rect *min_button;      /* Minimize button */
     bool decorations_visible;               /* Titlebar + window controls (right-click toggles) */
+    bool minimized;                         /* Hidden + off tile tree; restore with Super+Shift+Down */
 
     struct wl_listener map;
     struct wl_listener unmap;
@@ -127,7 +124,8 @@ struct stratwm_input_manager {
     struct wl_event_source *uevent_source;
 };
 
-static const float STRAT_BG[4] = {0.102f, 0.102f, 0.180f, 1.0f};
+/* Desktop fill under layer-shell + windows (not pure black so VMs show a clear “wallpaper”). */
+static const float STRAT_BG[4] = {0.149f, 0.165f, 0.235f, 1.0f};
 static void update_view_border(struct stratwm_view *view, bool focused);
 static void update_titlebar_buttons(struct stratwm_view *view, int width);
 static uint32_t stratwm_seat_modifiers(struct stratwm_server *server);
@@ -338,6 +336,20 @@ static int get_top_exclusive_zone(struct stratwm_server *server) {
         }
     }
     return zone;
+}
+
+/*
+ * Tiled geometry is the XDG window box; the compositor draws a titlebar at (tile_y - deco_titlebar_h).
+ * Reserve [0, zone) for the layer-shell panel and [zone, zone+th) for the titlebar so neither overlaps.
+ */
+static void stratwm_inset_workarea_top(struct stratwm_server *server, struct wlr_box *box) {
+    int zone = get_top_exclusive_zone(server);
+    int th = server->deco_titlebar_h;
+    box->y += zone + th;
+    box->height -= zone + th;
+    if (box->height < 1) {
+        box->height = 1;
+    }
 }
 
 /*
@@ -729,10 +741,12 @@ static void update_view_border(struct stratwm_view *view, bool focused) {
 static bool point_in_titlebar_button(struct wlr_scene_rect *button,
     double view_x, double view_y) {
     if (!button) return false;
-    if (!wlr_scene_node_is_enabled(&button->node)) return false;
+    if (!button->node.enabled) return false;
+    if (button->width <= 0 || button->height <= 0) return false;
     int bx = button->node.x;
     int by = button->node.y;
-    return view_x >= bx && view_x < bx + 16 && view_y >= by && view_y < by + 16;
+    return view_x >= bx && view_x < bx + button->width
+        && view_y >= by && view_y < by + button->height;
 }
 
 /* Update titlebar button positions based on current width */
@@ -895,6 +909,27 @@ static void move_view_to_workspace(struct stratwm_server *server, struct stratwm
         return;
     }
 
+    /* Minimized views are not in the BSP tree; only retag workspace + visibility. */
+    if (view->minimized) {
+        view->workspace_id = new_id;
+        bool on_current = (new_id == server->current_workspace);
+        wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+        if (server->focused_view == view && !on_current) {
+            update_view_border(view, false);
+            server->focused_view = NULL;
+            struct stratwm_view *v;
+            wl_list_for_each(v, &server->views, link) {
+                if (v->workspace_id == server->current_workspace && !v->minimized
+                    && v->scene_tree->node.enabled) {
+                    focus_view(v, v->xdg_toplevel->base->surface);
+                    break;
+                }
+            }
+            stratwm_refresh_tiled_visibility(server);
+        }
+        return;
+    }
+
     int old_id = view->workspace_id;
     struct stratwm_workspace *old_ws = &server->workspaces[old_id];
     struct stratwm_workspace *new_ws = &server->workspaces[new_id];
@@ -915,9 +950,7 @@ static void move_view_to_workspace(struct stratwm_server *server, struct stratwm
                 output_box.height = output->wlr_output->height;
                 break;
             }
-            int zone = get_top_exclusive_zone(server);
-            output_box.y += zone;
-            output_box.height -= zone;
+            stratwm_inset_workarea_top(server, &output_box);
             new_ws->root = tile_new(output_box);
         }
         if (new_ws->root) {
@@ -940,10 +973,14 @@ static void move_view_to_workspace(struct stratwm_server *server, struct stratwm
         server->focused_view = NULL;
         struct stratwm_view *v;
         wl_list_for_each(v, &server->views, link) {
-            if (v->workspace_id == server->current_workspace) {
-                focus_view(v, v->xdg_toplevel->base->surface);
-                break;
+            if (v->workspace_id != server->current_workspace || v->minimized) {
+                continue;
             }
+            if (!v->scene_tree->node.enabled) {
+                continue;
+            }
+            focus_view(v, v->xdg_toplevel->base->surface);
+            break;
         }
         stratwm_refresh_tiled_visibility(server);
     } else if (server->focused_view == view && on_current) {
@@ -1271,11 +1308,53 @@ static void output_frame_notify(struct wl_listener *listener, void *data) {
     wlr_scene_output_send_frame_done(output->scene_output, &now);
 }
 
+/*
+ * DRM / VM backends can push a panel rotation again after our initial commit.
+ * Keep KMS transform pinned to NORMAL so SHM layer-shell clients (stratpanel) match scanout.
+ */
+static void stratwm_output_request_state_notify(struct wl_listener *listener, void *data) {
+    struct stratwm_output *output = wl_container_of(listener, output, request_state);
+    const struct wlr_output_event_request_state *event = data;
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    if (!wlr_output_state_copy(&state, event->state)) {
+        wlr_output_state_finish(&state);
+        return;
+    }
+    wlr_output_state_set_transform(&state, WL_OUTPUT_TRANSFORM_NORMAL);
+    if (!wlr_output_commit_state(output->wlr_output, &state)) {
+#ifdef DEBUG
+        fprintf(stderr, "stratwm: request_state commit failed after forcing NORMAL transform\n");
+#endif
+    }
+    wlr_output_state_finish(&state);
+}
+
+static void stratwm_output_commit_notify(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct stratwm_output *output = wl_container_of(listener, output, commit);
+    if (output->wlr_output->transform != WL_OUTPUT_TRANSFORM_NORMAL) {
+        struct wlr_output_state state;
+        wlr_output_state_init(&state);
+        wlr_output_state_set_transform(&state, WL_OUTPUT_TRANSFORM_NORMAL);
+        if (!wlr_output_commit_state(output->wlr_output, &state)) {
+#ifdef DEBUG
+            fprintf(stderr,
+                "stratwm: output transform drifted to %d; re-commit NORMAL failed\n",
+                (int)output->wlr_output->transform);
+#endif
+        }
+        wlr_output_state_finish(&state);
+    }
+}
+
 static void output_destroy_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_output *output = wl_container_of(listener, output, destroy);
     wl_list_remove(&output->frame.link);
     wl_list_remove(&output->destroy.link);
+    wl_list_remove(&output->commit.link);
+    wl_list_remove(&output->request_state.link);
     wl_list_remove(&output->link);
     free(output);
 }
@@ -1304,6 +1383,12 @@ static void server_new_output_notify(struct wl_listener *listener, void *data) {
     if (mode != NULL) {
         wlr_output_state_set_mode(&state, mode);
     }
+    /*
+     * VirtualBox / some VMs advertise a rotated panel via EDID. If we leave that transform
+     * enabled, wlroots sets wl_surface preferred_buffer_transform and SHM clients (stratpanel)
+     * that draw upright pixels appear sideways. Force KMS framebuffer to normal orientation.
+     */
+    wlr_output_state_set_transform(&state, WL_OUTPUT_TRANSFORM_NORMAL);
     if (!wlr_output_commit_state(wlr_output, &state)) {
         wlr_output_state_finish(&state);
 #ifdef DEBUG
@@ -1331,6 +1416,10 @@ static void server_new_output_notify(struct wl_listener *listener, void *data) {
     wl_signal_add(&wlr_output->events.frame, &output->frame);
     output->destroy.notify = output_destroy_notify;
     wl_signal_add(&wlr_output->events.destroy, &output->destroy);
+    output->commit.notify = stratwm_output_commit_notify;
+    wl_signal_add(&wlr_output->events.commit, &output->commit);
+    output->request_state.notify = stratwm_output_request_state_notify;
+    wl_signal_add(&wlr_output->events.request_state, &output->request_state);
     wl_list_insert(&server->outputs, &output->link);
 
 #ifdef DEBUG
@@ -1414,9 +1503,7 @@ static void view_map_notify(struct wl_listener *listener, void *data) {
                 output_box.width = 1920;
                 output_box.height = 1080;
             }
-            int zone = get_top_exclusive_zone(server);
-            output_box.y += zone;
-            output_box.height -= zone;
+            stratwm_inset_workarea_top(server, &output_box);
             ws->root = tile_new(output_box);
             if (!ws->root) {
 #ifdef DEBUG
@@ -1613,7 +1700,12 @@ static void switch_workspace(struct stratwm_server *server, int workspace_id) {
     struct stratwm_workspace *new_ws = &server->workspaces[workspace_id];
     wl_list_for_each(view, &server->views, link) {
         if (view->workspace_id != server->current_workspace) continue;
-        
+
+        if (view->minimized) {
+            wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+            continue;
+        }
+
         bool visible = true;
         if (!view->is_floating) {
             switch (new_ws->layout) {
@@ -1629,7 +1721,7 @@ static void switch_workspace(struct stratwm_server *server, int workspace_id) {
         } else {
             visible = true; /* Floating windows always visible */
         }
-        
+
         wlr_scene_node_set_enabled(&view->scene_tree->node, visible);
     }
 
@@ -1637,7 +1729,7 @@ static void switch_workspace(struct stratwm_server *server, int workspace_id) {
     server->focused_view = NULL;
     struct stratwm_view *first_view = NULL;
     wl_list_for_each(view, &server->views, link) {
-        if (view->workspace_id == server->current_workspace) {
+        if (view->workspace_id == server->current_workspace && !view->minimized) {
             first_view = view;
             break;
         }
@@ -1650,7 +1742,7 @@ static void switch_workspace(struct stratwm_server *server, int workspace_id) {
 
 /* Float toggle: escape from tiling for single window (Phase 8.5) */
 static void toggle_float(struct stratwm_server *server, struct stratwm_view *view) {
-    if (!view) return;
+    if (!view || view->minimized) return;
 
     struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
 
@@ -1666,8 +1758,9 @@ static void toggle_float(struct stratwm_server *server, struct stratwm_view *vie
         struct stratwm_output *output = NULL;
         wl_list_for_each(output, &server->outputs, link) {
             int zone = get_top_exclusive_zone(server);
+            int th = server->deco_titlebar_h;
             view->float_x = 100;
-            view->float_y = zone + 20;  /* Below panel with 20px padding */
+            view->float_y = zone + th + 20;  /* Below panel + server titlebar */
             break;
         }
         wlr_scene_node_set_position(&view->scene_tree->node,
@@ -1684,9 +1777,7 @@ static void toggle_float(struct stratwm_server *server, struct stratwm_view *vie
                 output_box.height = output->wlr_output->height;
                 break;
             }
-            int zone = get_top_exclusive_zone(server);
-            output_box.y += zone;
-            output_box.height -= zone;
+            stratwm_inset_workarea_top(server, &output_box);
             ws->root = tile_new(output_box);
         }
 
@@ -1709,21 +1800,141 @@ static void maximize_float_window(struct stratwm_server *server, struct stratwm_
     struct stratwm_output *output = NULL;
     wl_list_for_each(output, &server->outputs, link) {
         int zone = get_top_exclusive_zone(server);
+        int th = server->deco_titlebar_h;
         
         /* Position at output top-left in layout coordinates */
         double ox = 0.0, oy = 0.0;
         wlr_output_layout_output_coords(server->output_layout, output->wlr_output, &ox, &oy);
         view->float_x = (int)ox;
-        view->float_y = (int)oy + zone;  /* Below panel */
+        view->float_y = (int)oy + zone + th;  /* Below panel and server titlebar */
         
         /* Resize surface to usable dimensions */
         wlr_xdg_toplevel_set_size(view->xdg_toplevel,
-            output->wlr_output->width, output->wlr_output->height - zone);
+            output->wlr_output->width, output->wlr_output->height - zone - th);
         
         wlr_scene_node_set_position(&view->scene_tree->node,
             view->float_x, view->float_y);
         break;
     }
+}
+
+/* True if this floating view fills the primary output work area (SSD maximize). */
+static bool view_float_is_maximized(struct stratwm_server *server, struct stratwm_view *view) {
+    if (!view || !view->is_floating) {
+        return false;
+    }
+    struct stratwm_output *output = NULL;
+    wl_list_for_each(output, &server->outputs, link) {
+        int zone = get_top_exclusive_zone(server);
+        int th = server->deco_titlebar_h;
+        int expect_w = output->wlr_output->width;
+        int expect_h = output->wlr_output->height - zone - th;
+        int cw = (int)view->xdg_toplevel->current.width;
+        int ch = (int)view->xdg_toplevel->current.height;
+        int dw = abs(cw - expect_w);
+        int dh = abs(ch - expect_h);
+        return dw <= 8 && dh <= 8;
+    }
+    return false;
+}
+
+/* Title-bar maximize: tiled → fill work area; maximized float → return to tiling. */
+static void stratwm_titlebar_toggle_maximize(struct stratwm_server *server, struct stratwm_view *view) {
+    if (!view || view->minimized) {
+        return;
+    }
+
+    if (view->is_floating && view_float_is_maximized(server, view)) {
+        wlr_xdg_toplevel_set_maximized(view->xdg_toplevel, false);
+        toggle_float(server, view);
+        return;
+    }
+
+    if (view->is_floating) {
+        wlr_xdg_toplevel_set_maximized(view->xdg_toplevel, true);
+        maximize_float_window(server, view);
+        return;
+    }
+
+    wlr_xdg_toplevel_set_maximized(view->xdg_toplevel, true);
+    toggle_float(server, view);
+    maximize_float_window(server, view);
+}
+
+static void stratwm_view_minimize(struct stratwm_server *server, struct stratwm_view *view) {
+    if (!view || view->minimized) {
+        return;
+    }
+
+    view->minimized = true;
+    wlr_xdg_toplevel_set_maximized(view->xdg_toplevel, false);
+
+    if (!view->is_floating) {
+        struct stratwm_workspace *ws = &server->workspaces[view->workspace_id];
+        if (ws->root) {
+            ws->root = tile_remove(ws->root, view);
+            tile_reflow_scene(ws->root);
+        }
+    }
+
+    if (server->focused_view == view) {
+        update_view_border(view, false);
+        server->focused_view = NULL;
+        struct stratwm_view *v;
+        wl_list_for_each(v, &server->views, link) {
+            if (v->workspace_id != view->workspace_id || v == view || v->minimized) {
+                continue;
+            }
+            if (!v->scene_tree->node.enabled) {
+                continue;
+            }
+            focus_view(v, v->xdg_toplevel->base->surface);
+            break;
+        }
+    }
+
+    wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+    stratwm_refresh_tiled_visibility(server);
+}
+
+/* Restore one minimized window on the current workspace (oldest first). */
+static void stratwm_unminimize_one(struct stratwm_server *server) {
+    struct stratwm_view *pick = NULL;
+    struct stratwm_view *v;
+    wl_list_for_each(v, &server->views, link) {
+        if (v->workspace_id == server->current_workspace && v->minimized) {
+            pick = v;
+            break;
+        }
+    }
+    if (pick == NULL) {
+        return;
+    }
+
+    pick->minimized = false;
+    wlr_scene_node_set_enabled(&pick->scene_tree->node, true);
+
+    if (!pick->is_floating) {
+        struct stratwm_workspace *ws = &server->workspaces[pick->workspace_id];
+        struct wlr_box output_box = {0, 0, 1920, 1080};
+        struct stratwm_output *output;
+        wl_list_for_each(output, &server->outputs, link) {
+            output_box.width = output->wlr_output->width;
+            output_box.height = output->wlr_output->height;
+            break;
+        }
+        stratwm_inset_workarea_top(server, &output_box);
+        if (!ws->root) {
+            ws->root = tile_new(output_box);
+        }
+        if (ws->root) {
+            ws->root = tile_insert(ws->root, pick, ws->root->geometry);
+            tile_reflow_scene(ws->root);
+        }
+    }
+
+    focus_view(pick, pick->xdg_toplevel->base->surface);
+    stratwm_refresh_tiled_visibility(server);
 }
 
 /* Layout switching: cycle through BSP/Stack/Fullscreen (Phase 8.6) */
@@ -1833,6 +2044,12 @@ static bool handle_keybinding(struct stratwm_server *server, xkb_keysym_t sym,
         if (server->focused_view) {
             maximize_float_window(server, server->focused_view);
         }
+        return true;
+    }
+
+    /* Restore a minimized window (same workspace; pairs with title-bar minimize). */
+    if (super_pressed && shift_pressed && sym == XKB_KEY_Down) {
+        stratwm_unminimize_one(server);
         return true;
     }
 
@@ -1956,10 +2173,14 @@ static struct wlr_surface *stratwm_surface_at_layout(struct stratwm_server *serv
         if (node == NULL) {
             continue;
         }
-        for (struct wlr_scene_node *n = node; n != NULL; n = n->parent) {
-            if (n->type == WLR_SCENE_NODE_SURFACE) {
-                struct wlr_scene_surface *ss = wlr_scene_surface_from_node(n);
-                return ss->surface;
+        for (struct wlr_scene_node *n = node; n != NULL;
+             n = n->parent ? &n->parent->node : NULL) {
+            if (n->type == WLR_SCENE_NODE_BUFFER) {
+                struct wlr_scene_buffer *buf = wlr_scene_buffer_from_node(n);
+                struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(buf);
+                if (ss != NULL) {
+                    return ss->surface;
+                }
             }
         }
         return NULL;
@@ -1981,7 +2202,7 @@ static struct stratwm_view *stratwm_view_at_cursor(struct stratwm_server *server
         if (v->workspace_id != server->current_workspace) {
             continue;
         }
-        if (!wlr_scene_node_is_enabled(&v->scene_tree->node)) {
+        if (!v->scene_tree->node.enabled) {
             continue;
         }
         double view_x = lx - (double)v->scene_tree->node.x;
@@ -2018,8 +2239,8 @@ static void stratwm_process_cursor_motion(struct stratwm_server *server, uint32_
     } else {
         wlr_seat_pointer_clear_focus(server->seat);
         if (server->cursor_manager != NULL) {
-            wlr_xcursor_manager_set_cursor_image(server->cursor_manager,
-                "left_ptr", server->cursor);
+            wlr_cursor_set_xcursor(server->cursor, server->cursor_manager,
+                "left_ptr");
         }
     }
 }
@@ -2076,12 +2297,12 @@ static void stratwm_process_pointer_button(
         }
 
         if (point_in_titlebar_button(view->max_button, view_x, view_y)) {
-            toggle_float(server, view);
+            stratwm_titlebar_toggle_maximize(server, view);
             return;
         }
 
         if (point_in_titlebar_button(view->min_button, view_x, view_y)) {
-            wlr_xdg_toplevel_send_close(view->xdg_toplevel);
+            stratwm_view_minimize(server, view);
             return;
         }
 
@@ -2474,8 +2695,8 @@ int main(void) {
             }
         }
         if (server.cursor_manager != NULL) {
-            wlr_xcursor_manager_set_cursor_image(server.cursor_manager,
-                "left_ptr", server.cursor);
+            wlr_cursor_set_xcursor(server.cursor, server.cursor_manager,
+                "left_ptr");
         }
     }
 

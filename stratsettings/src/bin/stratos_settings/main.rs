@@ -8,25 +8,36 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use stratlayer::{
-    Event, Interface, WaylandClient, WlCompositor, WlDisplay, WlRegistry, WlSeat, WlShm, WlShmPool,
-    WlSurface, XdgSurface, XdgToplevel, XdgWmBase, ShmBuffer, ShmPool,
+    Event, Interface, ShmBuffer, ShmPool, WaylandClient, WlCompositor, WlDisplay, WlRegistry,
+    WlSeat, WlShm, WlShmPool, WlSurface, XdgSurface, XdgToplevel, XdgWmBase,
 };
 use stratsettings::{StratSettings, CONFIG_DIR};
 
-use font::{draw_text, fill_rect};
+use font::{draw_text_scaled, fill_rect};
 
 const MOD_CTRL: u32 = 1 << 2;
 
-const BG: u32 = 0xFF2B2B2B;
-const FG: u32 = 0xFFF0F0F0;
-const ACCENT: u32 = 0xFF5B9BD5;
-const HI: u32 = 0xFF3D5270;
+const BG: u32 = 0xFF0E1524;
+const FG: u32 = 0xFFE9F2FF;
+const MUTED: u32 = 0xFF9BAFCC;
+const ACCENT: u32 = 0xFF73BCFF;
+const HI: u32 = 0xFF2B4670;
+const SURFACE: u32 = 0xFF152036;
+const SURFACE_ALT: u32 = 0xFF1B2942;
+const BORDER: u32 = 0xFF31476E;
 const BTN_LEFT: u32 = 0x110;
 
-const ROW_H: i32 = 18;
-const SEARCH_Y: i32 = 52;
-const LIST_Y: i32 = 84;
-const FOOTER_H: i32 = 22;
+const ROW_H_BASE: i32 = 22;
+const SEARCH_Y_BASE: i32 = 54;
+const LIST_Y_BASE: i32 = 92;
+const FOOTER_H_BASE: i32 = 28;
+
+fn quantize_font_scale(scale: f32) -> i32 {
+    if !scale.is_finite() {
+        return 1;
+    }
+    scale.clamp(1.0, 4.0).round() as i32
+}
 
 /// Every user-visible row: label, search keywords, value line, apply mutation.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -211,7 +222,8 @@ fn row_toggle(s: &mut StratSettings, id: RowId) {
         RowId::TrayUpd => s.panel.tray.show_updates = !s.panel.tray.show_updates,
         RowId::TrayBat => s.panel.tray.show_battery = !s.panel.tray.show_battery,
         RowId::TermStatusBar => {
-            s.stratterm.file_explorer.status_bar_enabled = !s.stratterm.file_explorer.status_bar_enabled;
+            s.stratterm.file_explorer.status_bar_enabled =
+                !s.stratterm.file_explorer.status_bar_enabled;
         }
         RowId::TermTitleBar => {
             s.stratterm.file_explorer.client_title_bar_enabled =
@@ -293,8 +305,7 @@ fn filter_rows(query: &str) -> Vec<usize> {
     if q.is_empty() {
         return (0..ROWS.len()).collect();
     }
-    ROWS
-        .iter()
+    ROWS.iter()
         .enumerate()
         .filter(|(_, r)| {
             r.label.to_ascii_lowercase().contains(&q)
@@ -469,42 +480,177 @@ fn draw_frame(
     sel: usize,
     scroll: usize,
     footer: &str,
+    ui_scale: i32,
 ) {
+    let s = ui_scale.max(1);
+    let cw = 6 * s;
+    let row_h = ROW_H_BASE * s;
+    let search_y = SEARCH_Y_BASE * s;
+    let list_y = LIST_Y_BASE * s;
+    let footer_h = FOOTER_H_BASE * s;
+
     fill_rect(buf, stride, w, h, 0, 0, w, h, BG);
-    draw_text(
-        buf, stride, w, h, 8, 8,
-        "StratOS Settings — type to filter, Tab switch, Enter toggle",
-        FG,
+    fill_rect(buf, stride, w, h, 0, 0, w, 42 * s, SURFACE);
+    fill_rect(buf, stride, w, h, 0, 41 * s, w, s.max(1), BORDER);
+    draw_text_scaled(buf, stride, w, h, 10 * s, 10 * s, "StratOS Settings", FG, s);
+    draw_text_scaled(
+        buf,
+        stride,
+        w,
+        h,
+        10 * s,
+        26 * s,
+        "Search first. Tab switches focus. Enter toggles values.",
+        MUTED,
+        s,
     );
     let hint = if focus_search {
-        "Search [active]"
+        "Search active"
     } else {
-        "List [active]"
+        "List active"
     };
-    draw_text(buf, stride, w, h, 8, 28, hint, ACCENT);
+    let hint_w = (hint.len() as i32 * cw) + 10 * s;
+    fill_rect(
+        buf,
+        stride,
+        w,
+        h,
+        w - hint_w - 10 * s,
+        10 * s,
+        hint_w,
+        12 * s,
+        SURFACE_ALT,
+    );
+    draw_text_scaled(
+        buf,
+        stride,
+        w,
+        h,
+        w - hint_w - 5 * s,
+        13 * s,
+        hint,
+        ACCENT,
+        s,
+    );
 
     let q = search.text();
-    let line = format!("> {}", q);
-    draw_text(buf, stride, w, h, 8, SEARCH_Y, &line, FG);
+    let search_box_x = 8 * s;
+    let search_box_y = search_y - 8 * s;
+    let search_box_w = w - 16 * s;
+    let search_box_h = 26 * s;
+    fill_rect(
+        buf,
+        stride,
+        w,
+        h,
+        search_box_x,
+        search_box_y,
+        search_box_w,
+        search_box_h,
+        BORDER,
+    );
+    fill_rect(
+        buf,
+        stride,
+        w,
+        h,
+        search_box_x + 1,
+        search_box_y + 1,
+        search_box_w - 2,
+        search_box_h - 2,
+        if focus_search { SURFACE_ALT } else { SURFACE },
+    );
+    let line = if q.is_empty() {
+        "Search settings (panel, terminal, spotlite, tray)".to_string()
+    } else {
+        format!("> {}", q)
+    };
+    draw_text_scaled(
+        buf,
+        stride,
+        w,
+        h,
+        search_box_x + 8 * s,
+        search_y,
+        &line,
+        if q.is_empty() { MUTED } else { FG },
+        s,
+    );
 
-    let max_rows = ((h - LIST_Y - FOOTER_H) / ROW_H).max(1) as usize;
+    let list_box_x = 8 * s;
+    let list_box_y = list_y - 6 * s;
+    let list_box_w = w - 16 * s;
+    let list_box_h = h - list_box_y - footer_h - 8 * s;
+    fill_rect(
+        buf, stride, w, h, list_box_x, list_box_y, list_box_w, list_box_h, BORDER,
+    );
+    fill_rect(
+        buf,
+        stride,
+        w,
+        h,
+        list_box_x + 1,
+        list_box_y + 1,
+        list_box_w - 2,
+        list_box_h - 2,
+        SURFACE,
+    );
+
+    let counter = format!("{} results", filtered.len());
+    draw_text_scaled(
+        buf,
+        stride,
+        w,
+        h,
+        list_box_x + 8 * s,
+        list_box_y + 6 * s,
+        &counter,
+        MUTED,
+        s,
+    );
+
+    let row_start_y = list_y + 8 * s;
+    let max_rows = ((h - row_start_y - footer_h - 2 * s) / row_h).max(1) as usize;
     let start = scroll.min(filtered.len().saturating_sub(1));
     let end = (start + max_rows).min(filtered.len());
 
     for (vis, &idx) in filtered[start..end].iter().enumerate() {
         let r = &ROWS[idx];
-        let y = LIST_Y + vis as i32 * ROW_H;
+        let y = row_start_y + vis as i32 * row_h;
         let row_idx = start + vis;
         let hl = !focus_search && row_idx == sel;
         if hl {
-            fill_rect(buf, stride, w, h, 4, y - 2, w - 8, ROW_H, HI);
+            fill_rect(buf, stride, w, h, 12 * s, y - 2 * s, w - 24 * s, row_h - s, HI);
+            fill_rect(buf, stride, w, h, 12 * s, y - 2 * s, 3 * s, row_h - s, ACCENT);
         }
         let val = row_value(settings, r.id);
-        let mut left = String::from(r.label);
-        left.push_str("  ");
-        draw_text(buf, stride, w, h, 12, y, &left, FG);
-        let vx = w - 12 - (val.len() as i32 * 6).min(w / 2);
-        draw_text(buf, stride, w, h, vx.max(200), y, &val, if hl { FG } else { ACCENT });
+        draw_text_scaled(buf, stride, w, h, 20 * s, y, r.label, FG, s);
+        let value_w = ((val.len() as i32 * cw) + 10 * s)
+            .max(50 * s)
+            .min((w / 2).max(80 * s));
+        let vx = (w - 20 * s - value_w).max(220 * s);
+        fill_rect(
+            buf,
+            stride,
+            w,
+            h,
+            vx,
+            y - 2 * s,
+            value_w,
+            row_h - 5 * s,
+            if hl { SURFACE_ALT } else { BG },
+        );
+        draw_text_scaled(
+            buf,
+            stride,
+            w,
+            h,
+            vx + 5 * s,
+            y,
+            &val,
+            if hl { FG } else { ACCENT },
+            s,
+        );
     }
 
     let foot = if footer.len() > 100 {
@@ -512,15 +658,19 @@ fn draw_frame(
     } else {
         footer
     };
-    draw_text(
+    fill_rect(buf, stride, w, h, 0, h - footer_h, w, footer_h, SURFACE);
+    fill_rect(buf, stride, w, h, 0, h - footer_h, w, s.max(1), BORDER);
+    draw_text_scaled(buf, stride, w, h, 8 * s, h - footer_h + 8 * s, foot, MUTED, s);
+    draw_text_scaled(
         buf,
         stride,
         w,
         h,
-        8,
-        h - FOOTER_H / 2 - 4,
-        foot,
-        0xFFAAAAAA,
+        w - 205 * s,
+        h - footer_h + 8 * s,
+        "Ctrl+S save  +/- adjust",
+        ACCENT,
+        s,
     );
 }
 
@@ -529,11 +679,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| Path::new(&s).to_path_buf())
         .unwrap_or_else(|_| Path::new(CONFIG_DIR).to_path_buf());
 
-    let mut settings = StratSettings::load_from(&config_root).unwrap_or_else(|_| StratSettings::default());
+    let mut settings =
+        StratSettings::load_from(&config_root).unwrap_or_else(|_| StratSettings::default());
+    let ui_scale = quantize_font_scale(settings.panel.font_scale);
 
     let mut client = WaylandClient::new()?;
     let registry_id = client.registry().allocate();
-    client.registry().set_interface(registry_id, Interface::WlRegistry);
+    client
+        .registry()
+        .set_interface(registry_id, Interface::WlRegistry);
     WlDisplay::new(1).get_registry(registry_id, client.socket());
     let globals = client.roundtrip()?;
 
@@ -543,7 +697,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut seat_n: Option<u32> = None;
 
     for event in &globals {
-        if let Event::RegistryGlobal { name, interface, .. } = event {
+        if let Event::RegistryGlobal {
+            name, interface, ..
+        } = event
+        {
             match interface.as_str() {
                 "wl_compositor" => compositor_n = Some(*name),
                 "wl_shm" => shm_n = Some(*name),
@@ -559,15 +716,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let xdg_n = xdg_n.ok_or("xdg_wm_base missing")?;
 
     let compositor_id = client.registry().allocate();
-    client.registry().set_interface(compositor_id, Interface::WlCompositor);
-    WlRegistry::new(registry_id).bind(compositor_n, "wl_compositor", 4, compositor_id, client.socket());
+    client
+        .registry()
+        .set_interface(compositor_id, Interface::WlCompositor);
+    WlRegistry::new(registry_id).bind(
+        compositor_n,
+        "wl_compositor",
+        4,
+        compositor_id,
+        client.socket(),
+    );
 
     let shm_id = client.registry().allocate();
     client.registry().set_interface(shm_id, Interface::WlShm);
     WlRegistry::new(registry_id).bind(shm_n, "wl_shm", 1, shm_id, client.socket());
 
     let xdg_wm_base_id = client.registry().allocate();
-    client.registry().set_interface(xdg_wm_base_id, Interface::XdgWmBase);
+    client
+        .registry()
+        .set_interface(xdg_wm_base_id, Interface::XdgWmBase);
     WlRegistry::new(registry_id).bind(xdg_n, "xdg_wm_base", 1, xdg_wm_base_id, client.socket());
 
     let seat_id = client.registry().allocate();
@@ -576,23 +743,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     WlRegistry::new(registry_id).bind(seat_n, "wl_seat", 7, seat_id, client.socket());
 
     let pointer_id = client.registry().allocate();
-    client.registry().set_interface(pointer_id, Interface::WlPointer);
+    client
+        .registry()
+        .set_interface(pointer_id, Interface::WlPointer);
     WlSeat::new(seat_id).get_pointer(pointer_id, client.socket());
 
     let keyboard_id = client.registry().allocate();
-    client.registry().set_interface(keyboard_id, Interface::WlKeyboard);
+    client
+        .registry()
+        .set_interface(keyboard_id, Interface::WlKeyboard);
     WlSeat::new(seat_id).get_keyboard(keyboard_id, client.socket());
 
     let surface_id = client.registry().allocate();
-    client.registry().set_interface(surface_id, Interface::WlSurface);
+    client
+        .registry()
+        .set_interface(surface_id, Interface::WlSurface);
     WlCompositor::new(compositor_id).create_surface(surface_id, client.socket());
 
     let xdg_surface_id = client.registry().allocate();
-    client.registry().set_interface(xdg_surface_id, Interface::XdgSurface);
+    client
+        .registry()
+        .set_interface(xdg_surface_id, Interface::XdgSurface);
     XdgWmBase::new(xdg_wm_base_id).get_xdg_surface(xdg_surface_id, surface_id, client.socket());
 
     let toplevel_id = client.registry().allocate();
-    client.registry().set_interface(toplevel_id, Interface::XdgToplevel);
+    client
+        .registry()
+        .set_interface(toplevel_id, Interface::XdgToplevel);
     XdgSurface::new(xdg_surface_id).get_toplevel(toplevel_id, client.socket());
     let toplevel = XdgToplevel::new(toplevel_id);
     toplevel.set_title("StratOS Settings", client.socket());
@@ -600,8 +777,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     WlSurface::new(surface_id).commit(client.socket());
 
-    let win_w: i32 = 720;
-    let win_h: i32 = 520;
+    let win_w: i32 = 720 * ui_scale;
+    let win_h: i32 = 520 * ui_scale;
 
     let xdg_serial = 'cfg: loop {
         for e in client.poll()? {
@@ -619,20 +796,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bufsize = (stride * win_h) as usize;
     let pool = ShmPool::create(bufsize)?;
     let pool_id = client.registry().allocate();
-    client.registry().set_interface(pool_id, Interface::WlShmPool);
+    client
+        .registry()
+        .set_interface(pool_id, Interface::WlShmPool);
     WlShm::new(shm_id).create_pool(pool_id, pool.fd(), bufsize as i32, client.socket());
 
     let buffer_id = client.registry().allocate();
-    client.registry().set_interface(buffer_id, Interface::WlBuffer);
-    WlShmPool::new(pool_id).create_buffer(
-        buffer_id,
-        0,
-        win_w,
-        win_h,
-        stride,
-        0,
-        client.socket(),
-    );
+    client
+        .registry()
+        .set_interface(buffer_id, Interface::WlBuffer);
+    WlShmPool::new(pool_id).create_buffer(buffer_id, 0, win_w, win_h, stride, 0, client.socket());
 
     let mut shm_buffer = ShmBuffer::new(pool, 0, win_w as u32, win_h as u32, stride as u32);
 
@@ -659,10 +832,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sel,
                 scroll,
                 &footer,
+                ui_scale,
             );
             WlSurface::new(surface_id).attach(buffer_id, 0, 0, client.socket());
-            WlSurface::new(surface_id)
-                .damage(0, 0, win_w, win_h, client.socket());
+            WlSurface::new(surface_id).damage(0, 0, win_w, win_h, client.socket());
             WlSurface::new(surface_id).commit(client.socket());
             needs = false;
         }
@@ -716,7 +889,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if key == 108 && !focus_search {
                         if sel + 1 < filtered.len() {
                             sel += 1;
-                            let max_rows = ((win_h - LIST_Y - FOOTER_H) / ROW_H).max(1) as usize;
+                            let row_h = ROW_H_BASE * ui_scale;
+                            let list_y = LIST_Y_BASE * ui_scale;
+                            let footer_h = FOOTER_H_BASE * ui_scale;
+                            let max_rows = ((win_h - list_y - footer_h) / row_h).max(1) as usize;
                             if sel >= scroll + max_rows {
                                 scroll = sel.saturating_sub(max_rows - 1);
                             }

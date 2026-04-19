@@ -18,11 +18,11 @@ impl Dispatcher {
 
     /// Blocking read from the Wayland socket; returns as many complete messages as fit.
     /// Call poll(POLLIN) before this if you want non-blocking behavior.
-    pub fn dispatch_once(&mut self) -> Result<Vec<Message>, Box<dyn std::error::Error>> {
+    pub fn dispatch_once(&mut self) -> Result<(Vec<Message>, Vec<RawFd>), Box<dyn std::error::Error>> {
         let mut buf = [0u8; 8192];
-        let n = self.socket.receive(&mut buf)?;
+        let (n, fds) = self.socket.receive_with_fds(&mut buf)?;
         if n == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), fds));
         }
         self.pending.extend_from_slice(&buf[..n]);
 
@@ -53,6 +53,6 @@ impl Dispatcher {
             self.pending.drain(..offset);
         }
 
-        Ok(messages)
+        Ok((messages, fds))
     }
 }

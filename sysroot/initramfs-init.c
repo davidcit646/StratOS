@@ -18,6 +18,38 @@
 /* Must match `xorriso -volid` in scripts/build-live-iso.sh (ISO9660 Primary Volume Descriptor). */
 #define STRAT_LIVE_ISO_LABEL "STRATOS_LIVE"
 
+/* VirtualBox / some firmware: kernel printk scrolls but init messages on stderr vanish.
+ * Write directly to the text console so "stuck after snd_hda_intel" is not mistaken for init dying. */
+static void blurt_visible(const char *msg) {
+    size_t len;
+
+    if (msg == NULL) {
+        return;
+    }
+    len = strlen(msg);
+    if (len == 0) {
+        return;
+    }
+    {
+        int fd = open("/dev/tty0", O_WRONLY | O_NOCTTY);
+        if (fd >= 0) {
+            (void)write(fd, "\r\n", 2);
+            (void)write(fd, msg, len);
+            (void)write(fd, "\r\n", 2);
+            close(fd);
+        }
+    }
+    {
+        int fd = open("/dev/console", O_WRONLY);
+        if (fd >= 0) {
+            (void)write(fd, "\n", 1);
+            (void)write(fd, msg, len);
+            (void)write(fd, "\n", 1);
+            close(fd);
+        }
+    }
+}
+
 static void wait_forever(void) {
     for (;;) {
         sleep(1);
@@ -591,9 +623,17 @@ int main(void) {
     mount_or_die("dev", "/dev", "devtmpfs", 0, NULL, "mount /dev");
     attach_console_stdio();
     log_status("mounted /dev");
+    blurt_visible("StratOS: initramfs started (looking for live ISO / system)...");
 
     if (cmdline_is_live_iso()) {
+        /* Hypervisors often enumerate the virtual CD a moment after devtmpfs comes up. */
+        blurt_visible("StratOS: waiting 2s for block devices (helps VirtualBox/QEMU)...");
+        sleep(2);
         if (mount_live_iso_volume() != 0) {
+            blurt_visible(
+                "StratOS: FAILED to mount ISO9660 medium. Try kernel param strat.live_iso_dev=/dev/sr0 "
+                "(or /dev/sda) via UEFI shell / rebuilt StratBoot — see docs/human/live-iso.md"
+            );
             fprintf(
                 stderr,
                 "init: live ISO: could not mount iso9660/udf (check USB path vs CD-ROM, or "
@@ -613,6 +653,7 @@ int main(void) {
         }
 
         if (mount_erofs_file_via_loop(full) != 0) {
+            blurt_visible("StratOS: FAILED to loop-mount slot-system.erofs from ISO.");
             fprintf(stderr, "init: live: could not mount EROFS at %s\n", full);
             wait_forever();
         }

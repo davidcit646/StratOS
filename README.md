@@ -46,7 +46,7 @@ Install the matching row before building that subtree; `./build-all-and-run.sh` 
 - `scripts/create-test-disk.sh`
 - `scripts/update-test-disk.sh`
 
-**Live ISO (optional):** after a full build, `./scripts/build-live-iso.sh` writes `out/live/stratos-live.iso`. Flash the ISO to USB with `dd` or another imager (verify the block device), boot on **UEFI hardware**, then run **`strat-installer`** as root to wipe a **whole internal disk** and install GPT/EROFS/ESP (see [docs/human/live-iso.md](docs/human/live-iso.md)).
+**Live ISO (optional):** after a full build, `./scripts/build-live-iso.sh` writes `out/live/stratos-live.iso`. Flash the ISO to USB with `dd` or another imager (verify the block device), boot on **UEFI hardware**. If the graphical terminal has no input, use **Alt+F2** for the text-mode **`strat-live-install-wizard`**, or run **`strat-installer`** as root on a working console to wipe a **whole internal disk** and install GPT/EROFS/ESP (see [docs/human/live-iso.md](docs/human/live-iso.md)).
 
 **Secure Boot:** StratBoot and the kernel are **unsigned**—builds succeed, but many PCs will not boot until **Secure Boot is disabled** in firmware (or a future signing/shim path exists). Same constraint for the test disk and the live ISO; details in [docs/human/live-iso.md](docs/human/live-iso.md#secure-boot).
 

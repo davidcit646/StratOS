@@ -122,6 +122,34 @@ impl WlSurface {
         let _ = socket.send(&msg.serialize());
     }
 
+    /// wl_surface.set_buffer_transform(transform) — since compositor version 2.
+    /// Use `0` for `WL_OUTPUT_TRANSFORM_NORMAL` (buffer authored in display coordinates).
+    pub fn set_buffer_transform(&self, transform: i32, socket: &WaylandSocket) {
+        let msg = Message::new(self.id, 7, vec![Argument::Int(transform)]);
+        let _ = socket.send(&msg.serialize());
+    }
+
+    /// wl_surface.set_buffer_scale(scale) — since compositor version 3.
+    pub fn set_buffer_scale(&self, scale: i32, socket: &WaylandSocket) {
+        let msg = Message::new(self.id, 8, vec![Argument::Int(scale)]);
+        let _ = socket.send(&msg.serialize());
+    }
+
+    /// wl_surface.damage_buffer — since compositor version 4 (buffer coordinates).
+    pub fn damage_buffer(&self, x: i32, y: i32, width: i32, height: i32, socket: &WaylandSocket) {
+        let msg = Message::new(
+            self.id,
+            9,
+            vec![
+                Argument::Int(x),
+                Argument::Int(y),
+                Argument::Int(width),
+                Argument::Int(height),
+            ],
+        );
+        let _ = socket.send(&msg.serialize());
+    }
+
     pub fn commit(&self, socket: &WaylandSocket) {
         let msg = Message::new(self.id, 6, vec![]); // commit
         let _ = socket.send(&msg.serialize());
