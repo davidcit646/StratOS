@@ -178,7 +178,20 @@ make -j$(nproc)
 log_ok "stratvm built"
 
 # ============================================================================
-# 4. BUILD STRATPANEL
+# 4. BUILD STRATSETTINGS (library + strat-ui-config + stratos-settings)
+# ============================================================================
+# stratpanel, stratterm, and stratman depend on this crate; build it first so
+# clean runs and release artifacts under stratsettings/target/ are deterministic.
+log_info "Building stratsettings..."
+cd "$REPO_ROOT/stratsettings"
+if [ $CLEAN_BUILD -eq 1 ]; then
+    cargo clean
+fi
+cargo build --release --bins
+log_ok "stratsettings built"
+
+# ============================================================================
+# 5. BUILD STRATPANEL
 # ============================================================================
 log_info "Building stratpanel..."
 cd "$REPO_ROOT/stratpanel"
@@ -189,18 +202,7 @@ cargo build --release
 log_ok "stratpanel built"
 
 # ============================================================================
-# 4b. BUILD STRATSETTINGS (strat-ui-config CLI + stratos-settings Wayland UI)
-# ============================================================================
-log_info "Building stratsettings..."
-cd "$REPO_ROOT/stratsettings"
-if [ $CLEAN_BUILD -eq 1 ]; then
-    cargo clean
-fi
-cargo build --release --bins
-log_ok "stratsettings built"
-
-# ============================================================================
-# 5. BUILD STRATTERM
+# 6. BUILD STRATTERM
 # ============================================================================
 log_info "Building stratterm..."
 cd "$REPO_ROOT/stratterm"
@@ -211,7 +213,7 @@ cargo build --release --bins
 log_ok "stratterm built"
 
 # ============================================================================
-# 6. BUILD STRATMAN
+# 7. BUILD STRATMAN
 # ============================================================================
 log_info "Building stratman..."
 cd "$REPO_ROOT/stratman"
@@ -222,7 +224,7 @@ cargo build --release
 log_ok "stratman built"
 
 # ============================================================================
-# 7. BUILD STRATSUP
+# 8. BUILD STRATSUP
 # ============================================================================
 log_info "Building stratsup..."
 cd "$REPO_ROOT/stratsup"
@@ -233,7 +235,7 @@ cargo build --release --bins
 log_ok "stratsup built"
 
 # ============================================================================
-# 8. BUILD SYSROOT (initramfs-init C code)
+# 9. BUILD SYSROOT (initramfs-init C code)
 # ============================================================================
 log_info "Building sysroot C components..."
 cd "$REPO_ROOT/sysroot"
@@ -244,7 +246,7 @@ make
 log_ok "sysroot components built"
 
 # ============================================================================
-# 9. BUILD INITRAMFS
+# 10. BUILD INITRAMFS
 # ============================================================================
 log_info "Building initramfs..."
 INITRAMFS_ROOT="$OUT_DIR/initramfs-root"
@@ -271,7 +273,7 @@ fi
 log_ok "Initramfs built -> $INITRAMFS_OUT"
 
 # ============================================================================
-# 10. PREPARE MINIMAL ROOTFS
+# 11. PREPARE MINIMAL ROOTFS
 # ============================================================================
 log_info "Preparing minimal rootfs..."
 ROOTFS_DIR="$OUT_DIR/rootfs-minimal"
@@ -510,7 +512,7 @@ mkdir -p "$ROOTFS_DIR/root"
 log_ok "Rootfs prepared -> $ROOTFS_DIR"
 
 # ============================================================================
-# 11. BUILD EROFS SYSTEM IMAGE
+# 12. BUILD EROFS SYSTEM IMAGE
 # ============================================================================
 log_info "Building EROFS system image..."
 cd "$OUT_DIR"
@@ -519,7 +521,7 @@ mkfs.erofs -zlz4hc slot-system.erofs rootfs-minimal
 log_ok "EROFs image built -> $OUT_DIR/slot-system.erofs"
 
 # ============================================================================
-# 12. UPDATE TEST DISK
+# 13. UPDATE TEST DISK
 # ============================================================================
 log_info "Updating test disk..."
 

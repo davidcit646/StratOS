@@ -1,7 +1,7 @@
 #include <efi.h>
 #include <efilib.h>
 #include <efiser.h>
-#include <protocol/SimpleFileSystem.h>
+/* Simple FS + EFI_FILE types: gnu-efi <efi.h> → efiprot.h (no EDK2 protocol/SimpleFileSystem.h). */
 #include "gop.h"
 #include "font.h"
 #include "input.h"

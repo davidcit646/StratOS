@@ -16,6 +16,14 @@ ifeq ($(strip $(WLROOTS_PKG)),)
 $(error wlroots pkg-config not found — install wlroots dev (e.g. Fedora wlroots-devel, Debian libwlroots-dev). Tried: wlroots, wlroots-0.17 … 0.22)
 endif
 
+# wlr_subcompositor (wlroots >= 0.18); omit on older wlroots (e.g. 0.17).
+WLR_INCLUDEDIR := $(shell $(PKG_CONFIG) --variable=includedir $(WLROOTS_PKG) 2>/dev/null)
+ifneq ($(WLR_INCLUDEDIR),)
+ifneq ($(wildcard $(WLR_INCLUDEDIR)/wlr/types/wlr_subcompositor.h),)
+CPPFLAGS += -DSTRATWM_HAVE_WLR_SUBCOMPOSITOR=1
+endif
+endif
+
 WL_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WLR_PROTO_DIR := $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols 2>/dev/null)
 ifeq ($(strip $(WLR_PROTO_DIR)),)

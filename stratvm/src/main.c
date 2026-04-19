@@ -30,7 +30,9 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_surface.h>
+#ifdef STRATWM_HAVE_WLR_SUBCOMPOSITOR
 #include <wlr/types/wlr_subcompositor.h>
+#endif
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -2423,7 +2425,9 @@ int main(void) {
     }
 
     wlr_compositor_create(server.wl_display, 5, server.renderer);
+#ifdef STRATWM_HAVE_WLR_SUBCOMPOSITOR
     wlr_subcompositor_create(server.wl_display);
+#endif
 
     server.layer_shell = wlr_layer_shell_v1_create(server.wl_display, 4);
     wl_list_init(&server.layer_surfaces);
