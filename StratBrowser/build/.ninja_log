@@ -1,0 +1,5 @@
+# ninja log v5
+0	582	1776651997373160650	CMakeFiles/stratbrowser.dir/src/main_gtk.cpp.o	91b25e11be2af1c8
+0	638	1776651997429160016	CMakeFiles/stratbrowser.dir/src/BrowserWindow.cpp.o	56fab18f1d71f833
+638	710	1776651997501421411	stratbrowser	7f0f8dc9d81471e4
+0	236	1776651460259635309	CMakeFiles/stratbrowser.dir/src/main_stub.cpp.o	9674dff0792df6df

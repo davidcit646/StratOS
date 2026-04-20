@@ -2,4 +2,5 @@ name = "strat-live-welcome"
 exec = "/bin/strat-live-welcome"
 restart = "never"
 oneshot = true
-depends = ["seatd"]
+depends = ["stratwm"]
+env = ["WAYLAND_DISPLAY=wayland-0", "XDG_RUNTIME_DIR=/run"]

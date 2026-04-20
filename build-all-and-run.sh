@@ -62,6 +62,45 @@ require_cmd() {
     fi
 }
 
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+        return $?
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        sudo -n "$@"
+        return $?
+    fi
+    log_error "Need root privileges to run: $*"
+    return 1
+}
+
+ensure_stratbrowser_build_deps() {
+    if pkg-config --exists gtk4 libadwaita-1; then
+        return 0
+    fi
+
+    log_warn "stratbrowser GTK deps missing; attempting auto-install..."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        run_as_root apt-get update
+        run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config libgtk-4-dev libadwaita-1-dev
+    elif command -v dnf >/dev/null 2>&1; then
+        run_as_root dnf install -y pkgconf-pkg-config gtk4-devel libadwaita-devel
+    elif command -v pacman >/dev/null 2>&1; then
+        run_as_root pacman -Sy --noconfirm pkgconf gtk4 libadwaita
+    else
+        log_error "No supported package manager found for automatic stratbrowser dependency install."
+        return 1
+    fi
+
+    if ! pkg-config --exists gtk4 libadwaita-1; then
+        log_error "Failed to resolve stratbrowser deps after install (need gtk4 + libadwaita-1)."
+        return 1
+    fi
+}
+
 if [ ! -d "$IDE_LOG_DIR" ]; then
     mkdir -p "$IDE_LOG_DIR"
 fi
@@ -219,7 +258,8 @@ else
     fi
     "$REPO_ROOT/scripts/fetch-wlroots.sh" || true
     make wlroots-build
-    make -j"$(nproc)" STRATVM_BUNDLED_WLROOTS=1
+    _bundled_pc="$REPO_ROOT/stratvm/wlroots/build/meson-uninstalled:$REPO_ROOT/stratvm/wlroots/build/meson-private:${HOME}/.local/share/pkgconfig:${HOME}/.local/lib/x86_64-linux-gnu/pkgconfig:${HOME}/.local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    PKG_CONFIG_PATH="$_bundled_pc" make -j"$(nproc)" STRATVM_BUNDLED_WLROOTS=1
 fi
 log_ok "stratvm built"
 
@@ -248,7 +288,44 @@ cargo build --release
 log_ok "stratpanel built"
 
 # ============================================================================
-# 6. BUILD STRATTERM
+# 6. BUILD STRATBROWSER
+# ============================================================================
+STRATBROWSER_BIN=""
+if [ -f "$REPO_ROOT/StratBrowser/CMakeLists.txt" ]; then
+    log_info "Building stratbrowser..."
+    if command -v cmake >/dev/null 2>&1; then
+        ensure_stratbrowser_build_deps
+        BROWSER_BUILD_DIR="$REPO_ROOT/StratBrowser/build"
+        if [ $CLEAN_BUILD -eq 1 ]; then
+            rm -rf "$BROWSER_BUILD_DIR"
+        fi
+
+        CMAKE_GEN_ARGS=()
+        if command -v ninja >/dev/null 2>&1; then
+            CMAKE_GEN_ARGS=(-G Ninja)
+        fi
+
+        cmake -S "$REPO_ROOT/StratBrowser" -B "$BROWSER_BUILD_DIR" \
+            -DSTRATBROWSER_ENABLE_GTK=ON \
+            -DSTRATBROWSER_REQUIRE_GTK=ON \
+            "${CMAKE_GEN_ARGS[@]}"
+        cmake --build "$BROWSER_BUILD_DIR" --parallel "$(nproc)"
+
+        if [ -x "$BROWSER_BUILD_DIR/stratbrowser" ]; then
+            STRATBROWSER_BIN="$BROWSER_BUILD_DIR/stratbrowser"
+            log_ok "stratbrowser built"
+        else
+            log_warn "stratbrowser build completed but binary not found at $BROWSER_BUILD_DIR/stratbrowser"
+        fi
+    else
+        log_warn "cmake not found; skipping stratbrowser build"
+    fi
+else
+    log_info "StratBrowser project not present; skipping"
+fi
+
+# ============================================================================
+# 7. BUILD STRATTERM
 # ============================================================================
 log_info "Building stratterm..."
 cd "$REPO_ROOT/stratterm"
@@ -259,7 +336,7 @@ cargo build --release --bins
 log_ok "stratterm built"
 
 # ============================================================================
-# 7. BUILD STRATMAN
+# 8. BUILD STRATMAN
 # ============================================================================
 log_info "Building stratman..."
 cd "$REPO_ROOT/stratman"
@@ -270,7 +347,7 @@ cargo build --release
 log_ok "stratman built"
 
 # ============================================================================
-# 8. BUILD STRATSUP
+# 9. BUILD STRATSUP
 # ============================================================================
 log_info "Building stratsup..."
 cd "$REPO_ROOT/stratsup"
@@ -281,7 +358,7 @@ cargo build --release --bins
 log_ok "stratsup built"
 
 # ============================================================================
-# 9. BUILD SYSROOT (initramfs-init C code)
+# 10. BUILD SYSROOT (initramfs-init C code)
 # ============================================================================
 log_info "Building sysroot C components..."
 cd "$REPO_ROOT/sysroot"
@@ -292,7 +369,7 @@ make
 log_ok "sysroot components built"
 
 # ============================================================================
-# 10. BUILD INITRAMFS
+# 11. BUILD INITRAMFS
 # ============================================================================
 log_info "Building initramfs..."
 INITRAMFS_ROOT="$OUT_DIR/initramfs-root"
@@ -319,7 +396,7 @@ fi
 log_ok "Initramfs built -> $INITRAMFS_OUT"
 
 # ============================================================================
-# 11. PREPARE MINIMAL ROOTFS
+# 12. PREPARE MINIMAL ROOTFS
 # ============================================================================
 log_info "Preparing minimal rootfs..."
 ROOTFS_DIR="$OUT_DIR/rootfs-minimal"
@@ -405,17 +482,126 @@ if [ -f "$REPO_ROOT/scripts/strat-live-install-wizard.sh" ]; then
     cp "$REPO_ROOT/scripts/strat-live-install-wizard.sh" "$ROOTFS_DIR/bin/strat-live-install-wizard"
     chmod 0755 "$ROOTFS_DIR/bin/strat-live-install-wizard"
 fi
+mkdir -p "$ROOTFS_DIR/usr/share/strat/tools"
+if [ -f "$REPO_ROOT/scripts/tool-source-catalog.tsv" ]; then
+    cp "$REPO_ROOT/scripts/tool-source-catalog.tsv" "$ROOTFS_DIR/usr/share/strat/tools/tool-source-catalog.tsv"
+fi
+if [ -f "$REPO_ROOT/scripts/strat-tool-catalog.sh" ]; then
+    cp "$REPO_ROOT/scripts/strat-tool-catalog.sh" "$ROOTFS_DIR/bin/strat-tool-catalog"
+    chmod 0755 "$ROOTFS_DIR/bin/strat-tool-catalog"
+fi
+copy_host_binary_with_libs() {
+    local src="$1"
+    local dst="$2"
+    [ -f "$src" ] || return 0
+    mkdir -p "$(dirname "$dst")"
+    cp -L "$src" "$dst"
+    chmod 0755 "$dst" 2>/dev/null || true
+    if command -v ldd >/dev/null 2>&1; then
+        ldd "$src" 2>/dev/null | awk '/=> \// {print $3}' | while read -r lib; do
+            [ -n "$lib" ] && [ -f "$lib" ] && cp -L "$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
+        done
+    fi
+}
+copy_host_dir_tree() {
+    local src="$1"
+    local dst="$2"
+    [ -d "$src" ] || return 0
+    mkdir -p "$dst"
+    cp -a "$src"/. "$dst"/
+}
+if [ -n "${STRATBROWSER_BIN:-}" ] && [ -x "$STRATBROWSER_BIN" ]; then
+    copy_host_binary_with_libs "$STRATBROWSER_BIN" "$ROOTFS_DIR/bin/stratbrowser"
+    # GTK runtime data/modules needed by libadwaita/gtk apps in minimal rootfs.
+    copy_host_dir_tree "/usr/share/glib-2.0/schemas" "$ROOTFS_DIR/usr/share/glib-2.0/schemas"
+    copy_host_dir_tree "/usr/share/icons/Adwaita" "$ROOTFS_DIR/usr/share/icons/Adwaita"
+    copy_host_dir_tree "/usr/share/themes/Adwaita" "$ROOTFS_DIR/usr/share/themes/Adwaita"
+
+    for _libbase in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
+        copy_host_dir_tree "$_libbase/gtk-4.0" "$ROOTFS_DIR$_libbase/gtk-4.0"
+        copy_host_dir_tree "$_libbase/gdk-pixbuf-2.0" "$ROOTFS_DIR$_libbase/gdk-pixbuf-2.0"
+        copy_host_dir_tree "$_libbase/gio/modules" "$ROOTFS_DIR$_libbase/gio/modules"
+    done
+fi
+copy_host_tool_for_runtime() {
+    local name="$1"
+    local src
+    src=$(command -v "$name" 2>/dev/null) || return 0
+    copy_host_binary_with_libs "$src" "$ROOTFS_DIR/usr/bin/$name"
+}
+install_core_micro() {
+    local dst_bin="$ROOTFS_DIR/bin/micro"
+    local dst_usr_bin="$ROOTFS_DIR/usr/bin/micro"
+    if command -v micro >/dev/null 2>&1; then
+        copy_host_binary_with_libs "$(command -v micro)" "$dst_bin"
+        mkdir -p "$ROOTFS_DIR/usr/bin"
+        ln -sf /bin/micro "$dst_usr_bin"
+        return 0
+    fi
+
+    local url="https://github.com/micro-editor/micro/releases/download/v2.0.15/micro-2.0.15-linux64-static.tar.gz"
+    local sha_url="${url}.sha"
+    local work
+    work=$(mktemp -d /tmp/stratos-micro.XXXXXX)
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$work/micro.tar.gz" || {
+            rm -rf "$work"
+            log_error "micro core utility missing and download failed: $url"
+            exit 1
+        }
+        curl -fsSL "$sha_url" -o "$work/micro.tar.gz.sha" 2>/dev/null || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$work/micro.tar.gz" "$url" || {
+            rm -rf "$work"
+            log_error "micro core utility missing and download failed: $url"
+            exit 1
+        }
+        wget -qO "$work/micro.tar.gz.sha" "$sha_url" 2>/dev/null || true
+    else
+        rm -rf "$work"
+        log_error "micro core utility missing and no curl/wget available to fetch it"
+        exit 1
+    fi
+
+    if [ -s "$work/micro.tar.gz.sha" ] && command -v sha256sum >/dev/null 2>&1; then
+        expected_sha=$(awk '{print $1; exit}' "$work/micro.tar.gz.sha" | tr -d '[:space:]')
+        actual_sha=$(sha256sum "$work/micro.tar.gz" | awk '{print $1}')
+        if [ -z "$expected_sha" ] || [ "$expected_sha" != "$actual_sha" ]; then
+            rm -rf "$work"
+            log_error "micro tarball checksum verification failed"
+            exit 1
+        fi
+    fi
+
+    tar -xzf "$work/micro.tar.gz" -C "$work" || {
+        rm -rf "$work"
+        log_error "failed to unpack micro tarball"
+        exit 1
+    }
+
+    local extracted="$work/micro-2.0.15/micro"
+    if [ ! -x "$extracted" ]; then
+        extracted=$(find "$work" -maxdepth 3 -type f -name micro | head -1 || true)
+    fi
+    if [ -z "$extracted" ] || [ ! -x "$extracted" ]; then
+        rm -rf "$work"
+        log_error "micro binary not found in downloaded archive"
+        exit 1
+    fi
+
+    mkdir -p "$ROOTFS_DIR/bin" "$ROOTFS_DIR/usr/bin"
+    cp -f "$extracted" "$dst_bin"
+    chmod 0755 "$dst_bin"
+    ln -sf /bin/micro "$dst_usr_bin"
+    rm -rf "$work"
+}
 copy_host_tool_for_installer() {
     local name="$1"
     local src
     src=$(command -v "$name" 2>/dev/null) || return 0
     mkdir -p "$ROOTFS_DIR/usr/sbin"
-    cp -L "$src" "$ROOTFS_DIR/usr/sbin/$name"
-    if command -v ldd >/dev/null 2>&1 && [ -f "$src" ]; then
-        ldd "$src" 2>/dev/null | awk '/=> \// {print $3}' | while read -r lib; do
-            [ -n "$lib" ] && [ -f "$lib" ] && cp -L "$lib" "$ROOTFS_DIR/lib64/" 2>/dev/null || true
-        done
-    fi
+    copy_host_binary_with_libs "$src" "$ROOTFS_DIR/usr/sbin/$name"
 }
 for _t in sgdisk partprobe mkfs.vfat mkfs.ext4 mke2fs mkfs.btrfs blkid lsblk blockdev findmnt openvt; do
     copy_host_tool_for_installer "$_t" || true
@@ -441,6 +627,18 @@ elif [ -x /bin/bash ]; then
 else
     ln -sf /bin/sh "$ROOTFS_DIR/bin/sh" 2>/dev/null || true
 fi
+
+# Always include a baseline terminal toolbox (even when busybox is unavailable on the build host).
+# This guarantees basic shell usability (grep/coreutils + disk inspection) in stratterm.
+for _t in \
+    ls cat cp mv rm mkdir rmdir \
+    grep sed awk find xargs cut sort uniq tr head tail wc \
+    du df ps sleep id \
+    mount umount lsblk blkid blockdev findmnt \
+    stat dirname basename readlink realpath uname; do
+    copy_host_tool_for_runtime "$_t" || true
+done
+install_core_micro
 
 # Copy seatd if available
 if [ -x "$REPO_ROOT/third_party/seatd/build/seatd" ]; then
@@ -604,6 +802,20 @@ echo "/lib" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/usr/lib" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/lib/x86_64-linux-gnu" >> "$ROOTFS_DIR/etc/ld.so.conf"
 echo "/usr/lib/x86_64-linux-gnu" >> "$ROOTFS_DIR/etc/ld.so.conf"
+
+# poweroff / reboot — signal stratman (PID 1) via SIGUSR1 / SIGUSR2
+cat > "$ROOTFS_DIR/bin/poweroff" <<'EOF'
+#!/bin/sh
+kill -USR1 1
+EOF
+chmod 0755 "$ROOTFS_DIR/bin/poweroff"
+
+cat > "$ROOTFS_DIR/bin/reboot" <<'EOF'
+#!/bin/sh
+kill -USR2 1
+EOF
+chmod 0755 "$ROOTFS_DIR/bin/reboot"
+ln -sf reboot "$ROOTFS_DIR/bin/halt"
 
 # Create passwd file
 echo "root:x:0:0:root:/root:/bin/sh" > "$ROOTFS_DIR/etc/passwd"

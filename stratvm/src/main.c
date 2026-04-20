@@ -135,6 +135,10 @@ static void move_view_to_workspace(struct stratwm_server *server, struct stratwm
 static void stratwm_load_deco_config(struct stratwm_server *server);
 static void stratwm_load_modular_chrome(struct stratwm_server *server);
 static void stratwm_refresh_tiled_visibility(struct stratwm_server *server);
+static bool stratwm_is_live_session(void);
+static void stratwm_inset_workarea_top(struct stratwm_server *server, struct wlr_box *box);
+static void tile_apply_geometry(struct stratwm_tile *tile, struct wlr_box geometry);
+static void tile_reflow_scene(struct stratwm_tile *tile);
 
 static void spawn_terminal(void) {
     pid_t pid = fork();
@@ -206,6 +210,22 @@ static void spawn_autostart(const char *path, const char *wayland_display) {
                 WTERMSIG(status), (long)pid);
         }
     }
+}
+
+static bool stratwm_is_live_session(void) {
+    FILE *f = fopen("/proc/cmdline", "r");
+    if (f == NULL) {
+        return false;
+    }
+    char buf[2048];
+    bool live = false;
+    if (fgets(buf, sizeof(buf), f) != NULL) {
+        if (strstr(buf, "strat.live=1") != NULL) {
+            live = true;
+        }
+    }
+    fclose(f);
+    return live;
 }
 
 /* From `/config/strat/stratvm-keybinds` (written by stratsettings save / strat-ui-config export-keybinds). */
@@ -336,6 +356,38 @@ static int get_top_exclusive_zone(struct stratwm_server *server) {
         }
     }
     return zone;
+}
+
+static struct wlr_box stratwm_primary_output_box(struct stratwm_server *server) {
+    struct wlr_box box = {0, 0, 1920, 1080};
+    struct stratwm_output *output = NULL;
+    wl_list_for_each(output, &server->outputs, link) {
+        double ox = 0.0, oy = 0.0;
+        wlr_output_layout_output_coords(server->output_layout, output->wlr_output, &ox, &oy);
+        box.x = (int)ox;
+        box.y = (int)oy;
+        if (output->wlr_output->width > 0) {
+            box.width = output->wlr_output->width;
+        }
+        if (output->wlr_output->height > 0) {
+            box.height = output->wlr_output->height;
+        }
+        break;
+    }
+    return box;
+}
+
+static void stratwm_reflow_all_workspaces(struct stratwm_server *server) {
+    struct wlr_box work = stratwm_primary_output_box(server);
+    stratwm_inset_workarea_top(server, &work);
+    for (int i = 0; i < STRATWM_WORKSPACES; i++) {
+        if (!server->workspaces[i].root) {
+            continue;
+        }
+        tile_apply_geometry(server->workspaces[i].root, work);
+        tile_reflow_scene(server->workspaces[i].root);
+    }
+    stratwm_refresh_tiled_visibility(server);
 }
 
 /*
@@ -777,6 +829,15 @@ static void update_titlebar_buttons(struct stratwm_view *view, int width) {
     }
 }
 
+/* Apps with intentional client-side chrome (like stratterm) should not get SSD by default. */
+static bool view_prefers_client_titlebar(struct stratwm_view *view) {
+    if (!view || !view->xdg_toplevel) {
+        return false;
+    }
+    const char *app_id = view->xdg_toplevel->app_id;
+    return app_id != NULL && strcmp(app_id, "stratos.stratterm") == 0;
+}
+
 /* Titlebar creation and management (Phase 8.8) */
 static void create_titlebar(struct stratwm_view *view) {
     if (!view) return;
@@ -803,7 +864,11 @@ static void create_titlebar(struct stratwm_view *view) {
 
     /* Initial button positioning (will be updated when window sizes) */
     update_titlebar_buttons(view, 100);
-    set_view_decorations_visible(view, view->server->default_decorations_visible);
+    bool visible = view->server->default_decorations_visible;
+    if (view_prefers_client_titlebar(view)) {
+        visible = false;
+    }
+    set_view_decorations_visible(view, visible);
 }
 
 static void destroy_titlebar(struct stratwm_view *view) {
@@ -1169,6 +1234,7 @@ static void layer_surface_configure(struct stratwm_layer_surface *layer) {
 static void layer_surface_commit_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, commit);
+    bool workarea_changed = false;
     
     /* Check if layer has changed and reparent if needed */
     if (layer->layer_surface->current.layer != layer->previous_layer) {
@@ -1192,23 +1258,32 @@ static void layer_surface_commit_notify(struct wl_listener *listener, void *data
         }
         wlr_scene_node_reparent(&layer->scene_tree->node, new_layer_tree);
         layer->previous_layer = layer->layer_surface->current.layer;
+        workarea_changed = true;
+    }
+
+    if (layer->layer_surface->current.exclusive_zone != layer->previous_exclusive_zone) {
+        layer->previous_exclusive_zone = layer->layer_surface->current.exclusive_zone;
+        workarea_changed = true;
     }
     
     layer_surface_configure(layer);
+    if (workarea_changed) {
+        stratwm_reflow_all_workspaces(layer->server);
+    }
 }
 
 static void layer_surface_map_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, map);
     wlr_scene_node_set_enabled(&layer->scene_tree->node, true);
-    tile_reflow_scene(layer->server->workspaces[layer->server->current_workspace].root);
+    stratwm_reflow_all_workspaces(layer->server);
 }
 
 static void layer_surface_unmap_notify(struct wl_listener *listener, void *data) {
     (void)data;
     struct stratwm_layer_surface *layer = wl_container_of(listener, layer, unmap);
     wlr_scene_node_set_enabled(&layer->scene_tree->node, false);
-    tile_reflow_scene(layer->server->workspaces[layer->server->current_workspace].root);
+    stratwm_reflow_all_workspaces(layer->server);
 }
 
 static void layer_surface_destroy_notify(struct wl_listener *listener, void *data) {
@@ -1250,6 +1325,7 @@ static void server_new_layer_surface_notify(struct wl_listener *listener, void *
     layer->server = server;
     layer->layer_surface = wlr_layer_surface;
     layer->previous_layer = wlr_layer_surface->pending.layer;
+    layer->previous_exclusive_zone = wlr_layer_surface->pending.exclusive_zone;
 
     /* Parent to the appropriate layer tree based on pending.layer */
     struct wlr_scene_tree *layer_tree;
@@ -2742,8 +2818,13 @@ int main(void) {
 #ifdef DEBUG
     fprintf(stderr, "stratwm: started (%s)\n", socket);
 #endif
-    spawn_autostart("/bin/stratterm", socket);
     spawn_autostart("/bin/stratpanel", socket);
+    bool live_session = stratwm_is_live_session();
+    if (!live_session) {
+        spawn_autostart("/bin/stratterm", socket);
+    } else {
+        fprintf(stderr, "stratwm: live session detected, skipping default stratterm autostart\n");
+    }
     wl_display_run(server.wl_display);
 
     wl_list_remove(&server.new_xdg_toplevel.link);

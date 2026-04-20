@@ -1,4 +1,4 @@
-StratOS bundled open fonts (generated 2026-04-19T22:18:52Z)
+StratOS bundled open fonts (generated 2026-04-20T02:40:13Z)
 Sources: googlefonts/noto-fonts, google/fonts (OFL/UFL), Adobe Source families,
   DejaVu, rsms/inter, JetBrains/JetBrainsMono, plus upstream Google Fonts OFL tree.
 Each family ships its own license (OFL.txt, LICENSE.txt, Apache-2.0, UFL, etc.) upstream.

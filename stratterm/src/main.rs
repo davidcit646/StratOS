@@ -588,6 +588,17 @@ fn render_frame(
 }
 
 fn main() -> Result<(), String> {
+    let exec_arg: Option<String> = {
+        let mut args = std::env::args().skip(1);
+        let mut exec = None;
+        while let Some(a) = args.next() {
+            if a == "--exec" {
+                exec = args.next();
+            }
+        }
+        exec
+    };
+
     let strat_cfg = stratsettings::StratSettings::load().unwrap_or_default();
     let client_title_bar = strat_cfg.stratterm.file_explorer.client_title_bar_enabled;
     let status_bar_enabled = strat_cfg.stratterm.file_explorer.status_bar_enabled;
@@ -621,7 +632,7 @@ fn main() -> Result<(), String> {
         }
     };
     screen.set_scrollback_max(scrollback_cap);
-    let pty = Pty::new(rows as u16, cols as u16)
+    let pty = Pty::new_with_exec(rows as u16, cols as u16, exec_arg.as_deref())
         .map_err(|e| format!("Failed to create PTY: {}", e))?;
     let frecency = FrecencyStore::open_default().ok();
     let explorer_view = default_file_explorer_view(&strat_cfg.stratterm.file_explorer.default_view);

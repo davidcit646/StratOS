@@ -1,0 +1,7 @@
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/stratbrowser.dir
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/edit_cache.dir
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/rebuild_cache.dir
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/list_install_components.dir
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/install.dir
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/install/local.dir
+/home/dcitarelli/StratOS/StratBrowser/build/CMakeFiles/install/strip.dir

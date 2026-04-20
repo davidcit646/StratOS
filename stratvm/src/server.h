@@ -1,6 +1,7 @@
 #ifndef STRATVM_SERVER_H
 #define STRATVM_SERVER_H
 
+#include <stdint.h>
 #include <stdbool.h>
 #include <wayland-server-core.h>
 
@@ -51,6 +52,7 @@ struct stratwm_layer_surface {
     struct wlr_scene_tree *scene_tree;
     struct wlr_scene_layer_surface_v1 *scene_layer_surface;
     uint32_t previous_layer;  /* Track layer changes for reparenting */
+    int32_t previous_exclusive_zone;  /* Track reserved-space changes for workarea reflow */
     struct wl_listener map;
     struct wl_listener unmap;
     struct wl_listener commit;

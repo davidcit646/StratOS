@@ -39,16 +39,28 @@ WLROOTS_PKG := $(shell \
 		P="$(WLROOTS_SRC)/build/meson-uninstalled:$(WLROOTS_SRC)/build/meson-private:$$P"; \
 	fi; \
 	export PKG_CONFIG_PATH="$$P"; \
-	if [ "$(STRATVM_BUNDLED_WLROOTS)" = "1" ] && $(PKG_CONFIG) --exists wlroots-0.19-uninstalled 2>/dev/null; then \
-		echo wlroots-0.19-uninstalled; exit 0; \
+	pkg_ok() { \
+		_pkg="$$1"; \
+		$(PKG_CONFIG) --exists "$$_pkg" >/dev/null 2>&1 || return 1; \
+		$(PKG_CONFIG) --cflags "$$_pkg" >/dev/null 2>&1 || return 1; \
+		$(PKG_CONFIG) --libs "$$_pkg" >/dev/null 2>&1 || return 1; \
+		return 0; \
+	}; \
+	if [ "$(STRATVM_BUNDLED_WLROOTS)" = "1" ]; then \
+		for p in wlroots-0.19-uninstalled wlroots-0.19; do \
+			if pkg_ok "$$p"; then \
+				echo "$$p"; exit 0; \
+			fi; \
+		done; \
+		exit 1; \
 	fi; \
 	for p in wlroots-0.22 wlroots-0.21 wlroots-0.20 wlroots-0.19 wlroots-0.18 wlroots-0.17 wlroots; do \
-		$(PKG_CONFIG) --exists "$$p" 2>/dev/null && echo "$$p" && exit 0; \
+		pkg_ok "$$p" && echo "$$p" && exit 0; \
 	done; \
 	for f in /usr/lib/pkgconfig/wlroots*.pc /usr/lib64/pkgconfig/wlroots*.pc /usr/lib/wlroots0.*/pkgconfig/wlroots.pc; do \
 		[ -f "$$f" ] || continue; \
 		b=$$(basename "$$f" .pc); \
-		$(PKG_CONFIG) --exists "$$b" 2>/dev/null && echo "$$b" && exit 0; \
+		pkg_ok "$$b" && echo "$$b" && exit 0; \
 	done; \
 	exit 1)
 

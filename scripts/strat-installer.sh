@@ -23,14 +23,109 @@ CONFIRM_PHRASE="DESTROY_ALL_DATA_ON_THIS_DISK"
 
 die() { echo "strat-installer: $*" >&2; exit 1; }
 
+current_uid() {
+    local uid
+    uid=""
+    if command -v id >/dev/null 2>&1; then
+        uid=$(id -u 2>/dev/null || true)
+    fi
+    if [ -z "$uid" ] && [ -r /proc/self/status ]; then
+        uid=$(awk '/^Uid:/ {print $2; exit}' /proc/self/status 2>/dev/null || true)
+    fi
+    echo "${uid:-1}"
+}
+
 usage() {
     echo "strat-installer — destructive fresh install to a single disk (matches create-test-disk layout)."
     echo "Options:"
     echo "  --disk PATH     Whole block device (e.g. /dev/sda, /dev/nvme0n1)"
     echo "  --source-dir D  install payloads (default: mount live ISO by LABEL=STRATOS_LIVE, else /dev/sr*)"
+    echo "  --tool-mode M   tool catalog mode: stable (default: stable)"
+    echo "  --tool-source S optional internet source for requested tools: none|apt|pacman|cargo (default: none)"
+    echo "  --tool-categories CSV  optional comma list (e.g. editor,search,network)"
+    echo "  --tool-list CSV  optional comma list of tool IDs (e.g. helix,ripgrep,fd)"
     echo "  --allow-wipe-live-medium  allow --disk to match the block device backing the source (DANGEROUS)"
     echo "  -h, --help"
     exit "${1:-0}"
+}
+
+csv_has() {
+    local needle="$1"
+    local hay="$2"
+    [ -n "$hay" ] || return 1
+    local it
+    local old_ifs="$IFS"
+    IFS=','
+    for it in $hay; do
+        [ "$it" = "$needle" ] && IFS="$old_ifs" && return 0
+    done
+    IFS="$old_ifs"
+    return 1
+}
+
+catalog_path() {
+    if [ -f "/usr/share/strat/tools/tool-source-catalog.tsv" ]; then
+        echo "/usr/share/strat/tools/tool-source-catalog.tsv"
+        return 0
+    fi
+    if [ -f "/etc/strat/tool-source-catalog.tsv" ]; then
+        echo "/etc/strat/tool-source-catalog.tsv"
+        return 0
+    fi
+    if [ -f "./scripts/tool-source-catalog.tsv" ]; then
+        echo "./scripts/tool-source-catalog.tsv"
+        return 0
+    fi
+    return 1
+}
+
+build_tool_plan() {
+    TOOL_REQUEST_TOOLS=""
+    TOOL_REQUEST_PACKAGES=""
+
+    [ "$TOOL_SOURCE" != "none" ] || return 0
+
+    local cat_file
+    cat_file=$(catalog_path) || die "tool catalog missing (expected /usr/share/strat/tools/tool-source-catalog.tsv)"
+    [ -r "$cat_file" ] || die "tool catalog not readable: $cat_file"
+
+    local line category tool cargo apt pacman upstream value
+    while IFS="$(printf '\t')" read -r category tool cargo apt pacman upstream || [ -n "${category:-}" ]; do
+        case "${category:-}" in
+            ""|\#*) continue ;;
+        esac
+
+        if [ -n "$TOOL_CATEGORIES" ] && ! csv_has "$category" "$TOOL_CATEGORIES"; then
+            continue
+        fi
+        if [ -n "$TOOL_LIST" ] && ! csv_has "$tool" "$TOOL_LIST"; then
+            continue
+        fi
+
+        case "$TOOL_SOURCE" in
+            cargo) value="$cargo" ;;
+            apt) value="$apt" ;;
+            pacman) value="$pacman" ;;
+            *) value="-" ;;
+        esac
+        [ -n "$value" ] || continue
+        [ "$value" = "-" ] && continue
+
+        if [ -z "$TOOL_REQUEST_TOOLS" ]; then
+            TOOL_REQUEST_TOOLS="$tool"
+        else
+            TOOL_REQUEST_TOOLS="${TOOL_REQUEST_TOOLS},$tool"
+        fi
+
+        if [ -z "$TOOL_REQUEST_PACKAGES" ]; then
+            TOOL_REQUEST_PACKAGES="$value"
+        else
+            TOOL_REQUEST_PACKAGES="${TOOL_REQUEST_PACKAGES}
+$value"
+        fi
+    done < "$cat_file"
+
+    [ -n "$TOOL_REQUEST_TOOLS" ] || die "no tools matched the requested source/filter set (source=$TOOL_SOURCE categories=$TOOL_CATEGORIES tools=$TOOL_LIST)"
 }
 
 # Whole disk for a block dev: /dev/sdb1 -> /dev/sdb; /dev/sr0 -> /dev/sr0; nvme0n1p2 -> /dev/nvme0n1
@@ -75,20 +170,39 @@ DISK=""
 SOURCE_DIR=""
 ISO_MNT=""
 ALLOW_WIPE_LIVE_MEDIUM=0
+TOOL_MODE="stable"
+TOOL_SOURCE="none"
+TOOL_CATEGORIES=""
+TOOL_LIST=""
+TOOL_REQUEST_TOOLS=""
+TOOL_REQUEST_PACKAGES=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --disk) DISK="$2"; shift 2 ;;
         --source-dir) SOURCE_DIR="$2"; shift 2 ;;
+        --tool-mode) TOOL_MODE="$2"; shift 2 ;;
+        --tool-source) TOOL_SOURCE="$2"; shift 2 ;;
+        --tool-categories) TOOL_CATEGORIES="$2"; shift 2 ;;
+        --tool-list) TOOL_LIST="$2"; shift 2 ;;
         --allow-wipe-live-medium) ALLOW_WIPE_LIVE_MEDIUM=1; shift ;;
         -h|--help) usage 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
 done
 
-[ "$(id -u)" -eq 0 ] || die "must run as root"
+[ "$(current_uid)" -eq 0 ] || die "must run as root"
 [ -n "$DISK" ] || die "missing required --disk"
 [ -b "$DISK" ] || die "not a block device: $DISK"
+
+case "$TOOL_MODE" in
+    stable) ;;
+    *) die "unsupported --tool-mode '$TOOL_MODE' (supported: stable)" ;;
+esac
+case "$TOOL_SOURCE" in
+    none|apt|pacman|cargo) ;;
+    *) die "invalid --tool-source '$TOOL_SOURCE' (use: none|apt|pacman|cargo)" ;;
+esac
 
 bn=$(basename "$DISK")
 ok=0
@@ -102,8 +216,16 @@ if ! grep -q 'strat\.live=1' /proc/cmdline 2>/dev/null; then
 fi
 
 INSTALL_ESP_MNT=""
+INSTALL_CFG_MNT=""
 
 cleanup_installer() {
+    if [ -n "${INSTALL_CFG_MNT:-}" ] && mountpoint -q "$INSTALL_CFG_MNT" 2>/dev/null; then
+        umount "$INSTALL_CFG_MNT" 2>/dev/null || true
+        rmdir "$INSTALL_CFG_MNT" 2>/dev/null || true
+    fi
+    if [ -n "${INSTALL_CFG_MNT:-}" ] && [ -d "$INSTALL_CFG_MNT" ]; then
+        rmdir "$INSTALL_CFG_MNT" 2>/dev/null || true
+    fi
     if [ -n "${INSTALL_ESP_MNT:-}" ] && mountpoint -q "$INSTALL_ESP_MNT" 2>/dev/null; then
         umount "$INSTALL_ESP_MNT" 2>/dev/null || true
         rmdir "$INSTALL_ESP_MNT" 2>/dev/null || true
@@ -164,6 +286,10 @@ for f in "$ER" "$KV" "$IR" "$BE"; do
     [ -f "$f" ] || die "missing file in source: $f"
 done
 
+if [ "$TOOL_SOURCE" != "none" ]; then
+    build_tool_plan
+fi
+
 # Never wipe the disk that currently supplies the install payloads (live USB / ISO volume).
 SOURCE_BACKING=""
 if src_dev=$(backing_block_for_path "$SOURCE_DIR"); then
@@ -202,6 +328,15 @@ echo ""
 echo "Target:     $DISK ($(basename "$DISK"), ${DISK_MIB} MiB)"
 echo "EROFS:      ${ER_BYTES} bytes → SLOT_A partition ${SLOT_A_MIB} MiB"
 echo "Source:     $SOURCE_DIR"
+echo "Tool mode:  $TOOL_MODE"
+if [ "$TOOL_SOURCE" = "none" ]; then
+    echo "Tools:      none selected"
+else
+    echo "Tools:      source=$TOOL_SOURCE"
+    [ -n "$TOOL_CATEGORIES" ] && echo "Categories: $TOOL_CATEGORIES"
+    [ -n "$TOOL_LIST" ] && echo "Tool IDs:   $TOOL_LIST"
+    echo "Matched:    $TOOL_REQUEST_TOOLS"
+fi
 echo ""
 echo "ALL DATA ON THIS DISK WILL BE PERMANENTLY DESTROYED."
 read -r -p "Type exactly: ${CONFIRM_PHRASE} : " line
@@ -262,6 +397,27 @@ mkfs.ext4 -F "$P5"
 mkfs.ext4 -F "$P6"
 mkfs.btrfs -f "$P7"
 
+if [ "$TOOL_SOURCE" != "none" ]; then
+    INSTALL_CFG_MNT=$(mktemp -d /tmp/stratos-config.XXXXXX)
+    mount "$P5" "$INSTALL_CFG_MNT"
+    mkdir -p "$INSTALL_CFG_MNT/strat/tools"
+    cat > "$INSTALL_CFG_MNT/strat/tools/request.env" <<EOF
+TOOL_MODE=$TOOL_MODE
+TOOL_SOURCE=$TOOL_SOURCE
+TOOL_CATEGORIES=$TOOL_CATEGORIES
+TOOL_LIST=$TOOL_LIST
+TOOL_MATCHED=$TOOL_REQUEST_TOOLS
+EOF
+    printf '%s\n' "$TOOL_REQUEST_PACKAGES" > "$INSTALL_CFG_MNT/strat/tools/${TOOL_SOURCE}-packages.txt"
+    if [ -f "/usr/share/strat/tools/tool-source-catalog.tsv" ]; then
+        cp -f "/usr/share/strat/tools/tool-source-catalog.tsv" "$INSTALL_CFG_MNT/strat/tools/tool-source-catalog.tsv"
+    fi
+    sync
+    umount "$INSTALL_CFG_MNT"
+    rmdir "$INSTALL_CFG_MNT"
+    INSTALL_CFG_MNT=""
+fi
+
 INSTALL_ESP_MNT=$(mktemp -d /tmp/stratos-esp.XXXXXX)
 mount "$P1" "$INSTALL_ESP_MNT"
 
@@ -287,3 +443,7 @@ trap - EXIT
 echo ""
 echo "Install finished. Remove the live USB (if any), select $DISK in firmware boot order, and reboot."
 echo "On first NVMe/SATA boot, StratBoot will initialize EFI variables if the NVRAM is empty."
+if [ "$TOOL_SOURCE" != "none" ]; then
+    echo "Optional tool request saved to CONFIG: /config/strat/tools/request.env"
+    echo "Selected package list: /config/strat/tools/${TOOL_SOURCE}-packages.txt"
+fi

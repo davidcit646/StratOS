@@ -12,6 +12,10 @@ pub struct Pty {
 
 impl Pty {
     pub fn new(rows: u16, cols: u16) -> Result<Self, String> {
+        Self::new_with_exec(rows, cols, None)
+    }
+
+    pub fn new_with_exec(rows: u16, cols: u16, exec: Option<&str>) -> Result<Self, String> {
         let winsize = Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -27,9 +31,6 @@ impl Pty {
         let (master_fd, child_pid) = match fork_result {
             ForkptyResult::Parent { master, child } => (master.into_raw_fd(), child),
             ForkptyResult::Child => {
-                let shell = CString::new("/bin/sh").unwrap();
-                let shell_name = CString::new("sh").unwrap();
-
                 std::env::set_var("TERM", "xterm-256color");
                 std::env::set_var("COLORTERM", "truecolor");
                 std::env::set_var("COLUMNS", cols.to_string());
@@ -38,8 +39,17 @@ impl Pty {
                 std::env::set_var("HOME", "/home/user");
                 std::env::set_var("SHELL", "/bin/sh");
 
-                let _ = execvp(&shell, &[&shell_name]);
-                // execvp only returns on error
+                if let Some(cmd) = exec {
+                    let cmd_c = CString::new(cmd).unwrap_or_else(|_| CString::new("/bin/sh").unwrap());
+                    let argv0 = CString::new(
+                        cmd.rsplit('/').next().unwrap_or(cmd)
+                    ).unwrap_or_else(|_| cmd_c.clone());
+                    let _ = execvp(&cmd_c, &[&argv0]);
+                } else {
+                    let shell = CString::new("/bin/sh").unwrap();
+                    let shell_name = CString::new("sh").unwrap();
+                    let _ = execvp(&shell, &[&shell_name]);
+                }
                 std::process::exit(127);
             }
         };

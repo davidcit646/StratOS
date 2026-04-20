@@ -1,6 +1,18 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+// 0=none, 1=poweroff, 2=reboot
+static SHUTDOWN_ACTION: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn handle_sigusr1(_: libc::c_int) {
+    SHUTDOWN_ACTION.store(1, Ordering::SeqCst);
+}
+
+extern "C" fn handle_sigusr2(_: libc::c_int) {
+    SHUTDOWN_ACTION.store(2, Ordering::SeqCst);
+}
 
 #[derive(Debug, Clone)]
 pub struct ServiceManifest {
@@ -86,7 +98,33 @@ fn parse_manifest(contents: &str) -> Result<ServiceManifest, String> {
     Ok(ServiceManifest { name, exec, args, restart, depends, socket, socket_timeout_ms, env, oneshot, namespace })
 }
 
+fn do_shutdown(pids: &[i32], poweroff: bool) -> ! {
+    eprintln!("stratman: initiating {}", if poweroff { "poweroff" } else { "reboot" });
+    for &pid in pids {
+        unsafe { libc::kill(pid, libc::SIGTERM); }
+    }
+    unsafe {
+        let ts = libc::timespec { tv_sec: 2, tv_nsec: 0 };
+        libc::nanosleep(&ts, core::ptr::null_mut());
+        for &pid in pids {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        libc::sync();
+        if poweroff {
+            libc::reboot(libc::RB_POWER_OFF);
+        } else {
+            libc::reboot(libc::RB_AUTOBOOT);
+        }
+        loop { libc::sleep(1); }
+    }
+}
+
 pub fn load_and_run_all() -> Result<(), String> {
+    unsafe {
+        libc::signal(libc::SIGUSR1, handle_sigusr1 as libc::sighandler_t);
+        libc::signal(libc::SIGUSR2, handle_sigusr2 as libc::sighandler_t);
+    }
+
     let mut manifests = Vec::new();
 
     // Load built-in manifests
@@ -150,6 +188,12 @@ pub fn load_and_run_all() -> Result<(), String> {
 
     // Main event loop
     loop {
+        let action = SHUTDOWN_ACTION.load(Ordering::SeqCst);
+        if action != 0 {
+            let pids: Vec<i32> = services.values().filter_map(|s| s.pid).collect();
+            do_shutdown(&pids, action == 1);
+        }
+
         let mut status: libc::c_int = 0;
         let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
         
